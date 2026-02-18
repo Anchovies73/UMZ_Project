@@ -55,6 +55,12 @@ def register_scene_props():
             description="Если включено — в JSON сохраняются треки только для выделенных объектов и список видимых объектов (для three.js/Blender)",
             default=False
         )
+    if not hasattr(bpy.types.Scene, "umz_text_and_markers"):
+        bpy.types.Scene.umz_text_and_markers = BoolProperty(
+            name="Текст и метки",
+            description="Сохранять и восстанавливать timeline markers и содержимое текстового редактора",
+            default=False
+        )
 
 def unregister_scene_props():
     if hasattr(bpy.types.Scene, "umz_selected_animation"):
@@ -76,7 +82,12 @@ def unregister_scene_props():
         try:
             del bpy.types.Scene.umz_anim_visible_selected_only
         except Exception:
-            pass        
+            pass
+    if hasattr(bpy.types.Scene, "umz_text_and_markers"):
+        try:
+            del bpy.types.Scene.umz_text_and_markers
+        except Exception:
+            pass
             
 
 
@@ -209,6 +220,7 @@ def draw_ui(layout, context):
 
     col.prop(context.scene, "umz_anim_visible_selected_only", text="Только выделенные объекты")
     col.prop(context.scene, "umz_export_alpha_tracks", text="Экспорт прозрачности (alpha)")
+    col.prop(context.scene, "umz_text_and_markers", text="Текст и метки")
     col.prop(context.scene, "umz_anim_full_delete", text="Полное удаление")
 
     layout.separator()
