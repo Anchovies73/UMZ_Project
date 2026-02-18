@@ -103,6 +103,7 @@ def _restore_text_editor_content(text_data):
         name = text_data.get("name")
         content = text_data.get("content")
         
+        # Skip if name is missing; allow empty content as it's a valid state
         if not name or content is None:
             return
         
@@ -237,17 +238,17 @@ def update_animation_from_scene(anim_name, only_selected=False):
     markers_data = _capture_timeline_markers(bpy.context.scene)
     if markers_data:
         entry["timeline_markers"] = markers_data
-    elif "timeline_markers" in entry:
+    else:
         # Remove if there are no markers anymore
-        del entry["timeline_markers"]
+        entry.pop("timeline_markers", None)
 
     # Capture text editor content (optional)
     text_data = _capture_text_editor_content()
     if text_data:
         entry["text_editor"] = text_data
-    elif "text_editor" in entry:
+    else:
         # Remove if there's no text editor content anymore
-        del entry["text_editor"]
+        entry.pop("text_editor", None)
 
     internal[anim_name] = entry
     write_internal_films(internal)
