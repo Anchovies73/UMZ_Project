@@ -9,7 +9,6 @@ from .constants import (
     CAMERA_BAKE_STEP_FRAMES,
     GLTF_ID_PROP,
 )
-from .text_utils import get_active_text_datablock
 
 # =========================================================
 # ЭКСПОРТ В THREE.JS (entry -> three_<name>.json)
@@ -273,6 +272,24 @@ def _build_alpha_tracks_for_object(node_id, anim, frame_start, frame_end, fps):
 # Timeline markers and text editor helpers
 # -------------------------
 
+def _get_active_text_datablock():
+    """
+    Получает активный текстовый блок из Blender Text Editor.
+    Возвращает bpy.types.Text или None.
+    """
+    try:
+        # Попытка найти активный TEXT_EDITOR area
+        for window in bpy.context.window_manager.windows:
+            for area in window.screen.areas:
+                if area.type == 'TEXT_EDITOR':
+                    space = area.spaces.active
+                    if hasattr(space, 'text') and space.text:
+                        return space.text
+    except Exception:
+        pass
+    return None
+
+
 def _parse_text_blocks(text_content):
     """
     Разбивает текст на блоки по пустым строкам.
@@ -426,7 +443,7 @@ def _build_markers_text(scene, fps):
         sorted_markers = sorted(markers, key=lambda m: m.frame)
         
         # Получаем текст из активного Text Editor
-        text_datablock = get_active_text_datablock()
+        text_datablock = _get_active_text_datablock()
         if not text_datablock:
             return []
         
