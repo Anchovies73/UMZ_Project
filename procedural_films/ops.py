@@ -272,6 +272,31 @@ def apply_animation_to_scene(anim_name, remove_other_animations=True):
     if not film:
         raise RuntimeError("Анимация не найдена.")
 
+    # Apply saved frame range if present
+    try:
+        frame_range_updated = False
+        if "frame_start" in film:
+            frame_start = int(film["frame_start"])
+            scene.frame_start = frame_start
+            frame_range_updated = True
+        if "frame_end" in film:
+            frame_end = int(film["frame_end"])
+            scene.frame_end = frame_end
+            frame_range_updated = True
+        
+        # Clamp current frame to new range if needed
+        if frame_range_updated:
+            current = scene.frame_current
+            start = scene.frame_start
+            end = scene.frame_end
+            if current < start:
+                scene.frame_set(start)
+            elif current > end:
+                scene.frame_set(end)
+    except (ValueError, TypeError):
+        # Invalid frame range values, skip applying them
+        pass
+
     track_objs = {t.get("object_name") for t in film.get("tracks", [])}
 
     if remove_other_animations:
