@@ -269,6 +269,121 @@ def _build_alpha_tracks_for_object(node_id, anim, frame_start, frame_end, fps):
 
 
 # -------------------------
+# Timeline markers and text editor helpers
+# -------------------------
+
+def _get_active_text_datablock():
+    """
+    Получает активный текстовый блок из Blender Text Editor.
+    Возвращает bpy.types.Text или None.
+    """
+    try:
+        # Попытка найти активный TEXT_EDITOR area
+        for window in bpy.context.window_manager.windows:
+            for area in window.screen.areas:
+                if area.type == 'TEXT_EDITOR':
+                    space = area.spaces.active
+                    if hasattr(space, 'text') and space.text:
+                        return space.text
+    except Exception:
+        pass
+    return None
+
+
+def _parse_text_blocks(text_content):
+    """
+    Разбивает текст на блоки по пустым строкам.
+    Возвращает список строк (блоков), каждый блок - текст с сохранением внутренних переносов.
+    """
+    if not text_content:
+        return []
+    
+    blocks = []
+    current_block = []
+    
+    for line in text_content.split('\n'):
+        stripped = line.strip()
+        if not stripped:
+            # Пустая строка - завершаем текущий блок
+            if current_block:
+                blocks.append('\n'.join(current_block))
+                current_block = []
+        else:
+            # Добавляем строку в текущий блок (с сохранением whitespace)
+            current_block.append(line)
+    
+    # Добавляем последний блок, если он есть
+    if current_block:
+        blocks.append('\n'.join(current_block))
+    
+    return blocks
+
+
+def _build_markers_text(scene, fps):
+    """
+    Строит список markers_text из timeline markers и активного текстового блока.
+    Возвращает список dict с ключами: start, end, text (и опционально start_marker, end_marker).
+    Возвращает пустой список, если нет достаточно данных.
+    """
+    try:
+        # Получаем timeline markers
+        markers = scene.timeline_markers
+        if len(markers) < 2:
+            return []
+        
+        # Сортируем маркеры по frame
+        sorted_markers = sorted(markers, key=lambda m: m.frame)
+        
+        # Получаем текст из активного Text Editor
+        text_datablock = _get_active_text_datablock()
+        if not text_datablock:
+            return []
+        
+        text_content = text_datablock.as_string()
+        if not text_content:
+            return []
+        
+        # Парсим текст на блоки
+        blocks = _parse_text_blocks(text_content)
+        if not blocks:
+            return []
+        
+        # Формируем marker ranges и мапим на блоки
+        result = []
+        fps_real = fps  # Уже учитывает fps_base
+        
+        for i in range(len(sorted_markers) - 1):
+            if i >= len(blocks):
+                # Блоков меньше чем marker ranges - игнорируем остальные ranges
+                break
+            
+            marker_start = sorted_markers[i]
+            marker_end = sorted_markers[i + 1]
+            
+            # Вычисляем время в секундах (абсолютное, не относительно frame_start)
+            start_seconds = float(marker_start.frame) / fps_real
+            end_seconds = float(marker_end.frame) / fps_real
+            
+            # Округляем до 2 знаков
+            start_seconds = round(start_seconds, 2)
+            end_seconds = round(end_seconds, 2)
+            
+            result.append({
+                "start": start_seconds,
+                "end": end_seconds,
+                "text": blocks[i],
+                "start_marker": marker_start.name,
+                "end_marker": marker_end.name
+            })
+        
+        return result
+    
+    except Exception:
+        # Если что-то пошло не так - возвращаем пустой список (robustness)
+        return []
+
+
+# -------------------------
 # Baking helpers (evaluated local transform)
 # -------------------------
 
@@ -539,6 +654,11 @@ def build_three_clip_from_saved_entry(entry_name, entry):
 
     if visible_nodes_mode == "SELECTED":
         out["visible_nodes"] = visible_nodes or []
+
+    # Добавляем markers_text если есть маркеры и текст
+    markers_text = _build_markers_text(scene, fps)
+    if markers_text:
+        out["markers_text"] = markers_text
 
     return out
 
