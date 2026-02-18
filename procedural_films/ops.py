@@ -293,7 +293,7 @@ def apply_animation_to_scene(anim_name, remove_other_animations=True):
                 scene.frame_set(start)
             elif current > end:
                 scene.frame_set(end)
-    except (ValueError, TypeError, KeyError):
+    except (ValueError, TypeError):
         # Invalid frame range values, skip applying them
         pass
 
