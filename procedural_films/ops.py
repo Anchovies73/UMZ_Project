@@ -23,6 +23,64 @@ from .three_export import (
     build_three_clip_from_saved_entry,
     write_three_animation_to_file,
 )
+from .text_utils import (
+    read_active_text,
+    write_active_text,
+)
+
+
+def _capture_timeline_markers(scene):
+    """
+    Capture timeline markers from scene and return as list of dicts.
+    Returns sorted list by frame.
+    """
+    try:
+        markers = scene.timeline_markers
+        result = []
+        for m in markers:
+            result.append({"name": m.name, "frame": int(m.frame)})
+        # Sort by frame
+        result.sort(key=lambda x: x["frame"])
+        return result
+    except Exception:
+        return []
+
+
+def _restore_timeline_markers(scene, markers_data):
+    """
+    Restore timeline markers to scene from list of dicts.
+    Clears existing markers first.
+    """
+    try:
+        scene.timeline_markers.clear()
+        for m_data in markers_data:
+            name = m_data.get("name", "")
+            frame = m_data.get("frame", 1)
+            marker = scene.timeline_markers.new(name=name, frame=frame)
+    except Exception:
+        pass
+
+
+def _capture_text_editor_content():
+    """
+    Capture text editor content using text_utils.
+    Returns string or None.
+    """
+    try:
+        return read_active_text()
+    except Exception:
+        return None
+
+
+def _restore_text_editor_content(content):
+    """
+    Restore text editor content using text_utils.
+    """
+    try:
+        if content is not None:
+            write_active_text(content)
+    except Exception:
+        pass
 
 
 def create_animation_entry(name, description=""):
@@ -81,6 +139,29 @@ def create_animation_from_scene(name, description="", only_selected=False):
     except Exception:
         pass
 
+    # Save timeline markers and text editor content if toggle is ON
+    scene = bpy.context.scene
+    save_text_and_markers = getattr(scene, "umz_text_and_markers", False)
+    
+    if save_text_and_markers:
+        try:
+            markers = _capture_timeline_markers(scene)
+            if markers:
+                entry["timeline_markers"] = markers
+        except Exception:
+            pass
+        
+        try:
+            text_content = _capture_text_editor_content()
+            if text_content is not None:
+                entry["text_editor_content"] = text_content
+        except Exception:
+            pass
+    else:
+        # Remove these keys if toggle is OFF (gating)
+        entry.pop("timeline_markers", None)
+        entry.pop("text_editor_content", None)
+
     internal[name] = entry
     write_internal_films(internal)
     write_animation_to_file(name, entry)
@@ -133,6 +214,29 @@ def update_animation_from_scene(anim_name, only_selected=False):
         entry["frame_end"] = int(bpy.context.scene.frame_end)
     except Exception:
         pass
+
+    # Save timeline markers and text editor content if toggle is ON
+    scene = bpy.context.scene
+    save_text_and_markers = getattr(scene, "umz_text_and_markers", False)
+    
+    if save_text_and_markers:
+        try:
+            markers = _capture_timeline_markers(scene)
+            if markers:
+                entry["timeline_markers"] = markers
+        except Exception:
+            pass
+        
+        try:
+            text_content = _capture_text_editor_content()
+            if text_content is not None:
+                entry["text_editor_content"] = text_content
+        except Exception:
+            pass
+    else:
+        # Remove these keys if toggle is OFF (gating)
+        entry.pop("timeline_markers", None)
+        entry.pop("text_editor_content", None)
 
     internal[anim_name] = entry
     write_internal_films(internal)
@@ -360,4 +464,35 @@ def apply_animation_to_scene(anim_name, remove_other_animations=True):
         pass
     
     _apply_visibility_from_entry(film)
+    
+    # Restore timeline markers and text editor content if toggle is ON
+    restore_text_and_markers = getattr(scene, "umz_text_and_markers", False)
+    
+    if restore_text_and_markers:
+        # Restore timeline markers
+        try:
+            markers_data = film.get("timeline_markers")
+            if markers_data:
+                _restore_timeline_markers(scene, markers_data)
+        except Exception:
+            pass
+        
+        # Restore text editor content with backward compatibility
+        try:
+            text_content = None
+            
+            # First try new format
+            if "text_editor_content" in film:
+                text_content = film["text_editor_content"]
+            # Fallback to old format for backward compatibility
+            elif "text_editor" in film:
+                old_text_data = film.get("text_editor")
+                if isinstance(old_text_data, dict):
+                    text_content = old_text_data.get("content")
+            
+            if text_content is not None:
+                _restore_text_editor_content(text_content)
+        except Exception:
+            pass
+    
     return {"applied": applied}
