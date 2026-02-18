@@ -22,11 +22,100 @@ from .blender_codec import (
 from .three_export import (
     build_three_clip_from_saved_entry,
     write_three_animation_to_file,
+    _get_active_text_datablock,
 )
 
 
 def create_animation_entry(name, description=""):
     return {"created_at": datetime.now().isoformat(), "description": description, "tracks": []}
+
+
+def _capture_timeline_markers(scene):
+    """
+    Capture timeline markers from the scene.
+    Returns a list of dicts with 'name' and 'frame' keys, or None if no markers.
+    """
+    try:
+        markers = scene.timeline_markers
+        if not markers or len(markers) == 0:
+            return None
+        
+        markers_data = []
+        for marker in markers:
+            markers_data.append({
+                "name": marker.name,
+                "frame": int(marker.frame)
+            })
+        return markers_data
+    except Exception:
+        return None
+
+
+def _restore_timeline_markers(scene, markers_data):
+    """
+    Restore timeline markers to the scene.
+    markers_data should be a list of dicts with 'name' and 'frame' keys.
+    """
+    if not markers_data:
+        return
+    
+    try:
+        # Clear existing markers
+        scene.timeline_markers.clear()
+        
+        # Add saved markers
+        for marker_info in markers_data:
+            name = marker_info.get("name", "")
+            frame = marker_info.get("frame")
+            if frame is not None:
+                marker = scene.timeline_markers.new(name, frame=int(frame))
+    except Exception:
+        pass
+
+
+def _capture_text_editor_content():
+    """
+    Capture the content of the active text editor.
+    Returns a dict with 'name' and 'content' keys, or None if no active text editor.
+    """
+    try:
+        text_datablock = _get_active_text_datablock()
+        if not text_datablock:
+            return None
+        
+        return {
+            "name": text_datablock.name,
+            "content": text_datablock.as_string()
+        }
+    except Exception:
+        return None
+
+
+def _restore_text_editor_content(text_data):
+    """
+    Restore text editor content.
+    text_data should be a dict with 'name' and 'content' keys.
+    """
+    if not text_data:
+        return
+    
+    try:
+        name = text_data.get("name")
+        content = text_data.get("content")
+        
+        if not name or content is None:
+            return
+        
+        # Get or create text datablock
+        text_datablock = bpy.data.texts.get(name)
+        if not text_datablock:
+            text_datablock = bpy.data.texts.new(name)
+        
+        # Set content
+        text_datablock.clear()
+        text_datablock.write(content)
+    except Exception:
+        pass
 
 
 def _clear_animation_on_object(obj):
@@ -81,6 +170,16 @@ def create_animation_from_scene(name, description="", only_selected=False):
     except Exception:
         pass
 
+    # Capture timeline markers (optional)
+    markers_data = _capture_timeline_markers(bpy.context.scene)
+    if markers_data:
+        entry["timeline_markers"] = markers_data
+
+    # Capture text editor content (optional)
+    text_data = _capture_text_editor_content()
+    if text_data:
+        entry["text_editor"] = text_data
+
     internal[name] = entry
     write_internal_films(internal)
     write_animation_to_file(name, entry)
@@ -133,6 +232,22 @@ def update_animation_from_scene(anim_name, only_selected=False):
         entry["frame_end"] = int(bpy.context.scene.frame_end)
     except Exception:
         pass
+
+    # Capture timeline markers (optional)
+    markers_data = _capture_timeline_markers(bpy.context.scene)
+    if markers_data:
+        entry["timeline_markers"] = markers_data
+    elif "timeline_markers" in entry:
+        # Remove if there are no markers anymore
+        del entry["timeline_markers"]
+
+    # Capture text editor content (optional)
+    text_data = _capture_text_editor_content()
+    if text_data:
+        entry["text_editor"] = text_data
+    elif "text_editor" in entry:
+        # Remove if there's no text editor content anymore
+        del entry["text_editor"]
 
     internal[anim_name] = entry
     write_internal_films(internal)
@@ -358,6 +473,14 @@ def apply_animation_to_scene(anim_name, remove_other_animations=True):
         bpy.context.view_layer.update()
     except Exception:
         pass
+    
+    # Restore timeline markers if present
+    if "timeline_markers" in film:
+        _restore_timeline_markers(scene, film["timeline_markers"])
+    
+    # Restore text editor content if present
+    if "text_editor" in film:
+        _restore_text_editor_content(film["text_editor"])
     
     _apply_visibility_from_entry(film)
     return {"applied": applied}
