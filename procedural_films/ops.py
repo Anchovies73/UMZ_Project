@@ -103,7 +103,7 @@ def _restore_text_editor_content(text_data):
         name = text_data.get("name")
         content = text_data.get("content")
         
-        # Skip if name is missing; allow empty content as it's a valid state
+        # Skip if name is missing; content must not be None (empty string "" is valid)
         if not name or content is None:
             return
         
