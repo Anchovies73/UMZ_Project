@@ -56,7 +56,7 @@ def _restore_timeline_markers(scene, markers_data):
         for m_data in markers_data:
             name = m_data.get("name", "")
             frame = m_data.get("frame", 1)
-            marker = scene.timeline_markers.new(name=name, frame=frame)
+            scene.timeline_markers.new(name=name, frame=frame)
     except Exception:
         pass
 
