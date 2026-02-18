@@ -342,7 +342,7 @@ def _parse_id_and_text(block):
     if space_idx == -1:
         # Нет пробела - весь блок должен быть id токеном
         token = block
-        text = ""
+        text = ''
     else:
         token = block[:space_idx]
         text = block[space_idx + 1:]
@@ -475,6 +475,7 @@ def _build_markers_text(scene, fps):
                 # Блоков меньше чем marker ranges - игнорируем остальные ranges
                 break
             
+            parsed_block = parsed_blocks[i]
             marker_start = sorted_markers[i]
             marker_end = sorted_markers[i + 1]
             
@@ -487,10 +488,10 @@ def _build_markers_text(scene, fps):
             end_seconds = round(end_seconds, 2)
             
             flat_blocks.append({
-                'id': parsed_blocks[i]['id'],
+                'id': parsed_block['id'],
                 'start': start_seconds,
                 'end': end_seconds,
-                'text': parsed_blocks[i]['text']
+                'text': parsed_block['text']
             })
         
         # Строим иерархическое дерево
