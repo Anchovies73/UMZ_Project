@@ -274,15 +274,18 @@ def apply_animation_to_scene(anim_name, remove_other_animations=True):
 
     # Apply saved frame range if present
     try:
+        frame_range_updated = False
         if "frame_start" in film:
             frame_start = int(film["frame_start"])
             scene.frame_start = frame_start
+            frame_range_updated = True
         if "frame_end" in film:
             frame_end = int(film["frame_end"])
             scene.frame_end = frame_end
+            frame_range_updated = True
         
         # Clamp current frame to new range if needed
-        if "frame_start" in film or "frame_end" in film:
+        if frame_range_updated:
             current = scene.frame_current
             start = scene.frame_start
             end = scene.frame_end
