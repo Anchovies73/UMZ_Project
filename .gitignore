@@ -1,0 +1,8 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Blender temp files
+*.blend1
+*.blend2
