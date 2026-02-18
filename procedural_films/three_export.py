@@ -306,24 +306,132 @@ def _parse_text_blocks(text_content):
         if not stripped:
             # Пустая строка - завершаем текущий блок
             if current_block:
-                blocks.append('\n'.join(current_block))
+                block_text = '\n'.join(current_block)
+                block_text = block_text.strip()
+                if block_text:
+                    blocks.append(block_text)
                 current_block = []
         else:
-            # Добавляем строку в текущий блок (с сохранением whitespace)
+            # Добавляем строку в текущий блок
             current_block.append(line)
     
     # Добавляем последний блок, если он есть
     if current_block:
-        blocks.append('\n'.join(current_block))
+        block_text = '\n'.join(current_block)
+        block_text = block_text.strip()
+        if block_text:
+            blocks.append(block_text)
     
     return blocks
 
 
+def _parse_id_and_text(block):
+    """
+    Парсит блок текста, извлекая id токен и остальной текст.
+    id токен - это последовательность цифр, разделенных точками, заканчивающаяся точкой.
+    Примеры: '1.', '1.1.', '1.2.1.1.'
+    
+    Возвращает (id, text) или (None, None) если формат неверный.
+    """
+    if not block:
+        return None, None
+    
+    # Ищем первый пробел
+    space_idx = block.find(' ')
+    
+    if space_idx == -1:
+        # Нет пробела - весь блок должен быть id токеном
+        token = block
+        text = ""
+    else:
+        token = block[:space_idx]
+        text = block[space_idx + 1:]
+    
+    # Проверяем формат id токена
+    if not token.endswith('.'):
+        return None, None
+    
+    # Проверяем, что до точки только цифры и точки
+    parts = token[:-1].split('.')
+    if not parts:
+        return None, None
+    
+    for part in parts:
+        if not part:
+            return None, None
+        if not part.isdigit():
+            return None, None
+    
+    return token, text
+
+
+def _get_parent_id(node_id):
+    """
+    Возвращает parent id для данного id.
+    Примеры:
+      '1.2.1.' -> '1.2.'
+      '1.2.' -> '1.'
+      '1.' -> None
+    """
+    if not node_id or not node_id.endswith('.'):
+        return None
+    
+    parts = node_id[:-1].split('.')
+    if len(parts) <= 1:
+        return None
+    
+    return '.'.join(parts[:-1]) + '.'
+
+
+def _build_hierarchical_tree(flat_blocks):
+    """
+    Строит иерархическое дерево из плоского списка блоков.
+    
+    flat_blocks - список dict с ключами: id, start, end, text
+    
+    Возвращает список корневых узлов, где каждый узел имеет структуру:
+    {
+      "id": "1.",
+      "start": 0.0,
+      "end": 1.5,
+      "text": "some text",
+      "children": [...]
+    }
+    """
+    if not flat_blocks:
+        return []
+    
+    # Создаём словарь для быстрого доступа к узлам по id
+    nodes = {}
+    for block in flat_blocks:
+        node_id = block['id']
+        nodes[node_id] = {
+            'id': node_id,
+            'start': block['start'],
+            'end': block['end'],
+            'text': block['text'],
+            'children': []
+        }
+    
+    # Находим корневые узлы и строим дерево
+    roots = []
+    for node_id, node in nodes.items():
+        parent_id = _get_parent_id(node_id)
+        if parent_id is None:
+            # Это корневой узел
+            roots.append(node)
+        elif parent_id in nodes:
+            # Добавляем к родителю
+            nodes[parent_id]['children'].append(node)
+        # Если родитель не найден, узел игнорируется (не добавляется в дерево)
+    
+    return roots
+
+
 def _build_markers_text(scene, fps):
     """
-    Строит список markers_text из timeline markers и активного текстового блока.
-    Возвращает список dict с ключами: start, end, text (и опционально start_marker, end_marker).
-    Возвращает пустой список, если нет достаточно данных.
+    Строит иерархический список markers_text из timeline markers и активного текстового блока.
+    Возвращает список корневых узлов или пустой список, если нет достаточно данных.
     """
     try:
         # Получаем timeline markers
@@ -344,16 +452,26 @@ def _build_markers_text(scene, fps):
             return []
         
         # Парсим текст на блоки
-        blocks = _parse_text_blocks(text_content)
-        if not blocks:
+        raw_blocks = _parse_text_blocks(text_content)
+        if not raw_blocks:
+            return []
+        
+        # Парсим каждый блок, извлекая id и text
+        parsed_blocks = []
+        for block in raw_blocks:
+            node_id, text = _parse_id_and_text(block)
+            if node_id is not None:
+                parsed_blocks.append({'id': node_id, 'text': text})
+        
+        if not parsed_blocks:
             return []
         
         # Формируем marker ranges и мапим на блоки
-        result = []
+        flat_blocks = []
         fps_real = fps  # Уже учитывает fps_base
         
         for i in range(len(sorted_markers) - 1):
-            if i >= len(blocks):
+            if i >= len(parsed_blocks):
                 # Блоков меньше чем marker ranges - игнорируем остальные ranges
                 break
             
@@ -368,15 +486,16 @@ def _build_markers_text(scene, fps):
             start_seconds = round(start_seconds, 2)
             end_seconds = round(end_seconds, 2)
             
-            result.append({
-                "start": start_seconds,
-                "end": end_seconds,
-                "text": blocks[i],
-                "start_marker": marker_start.name,
-                "end_marker": marker_end.name
+            flat_blocks.append({
+                'id': parsed_blocks[i]['id'],
+                'start': start_seconds,
+                'end': end_seconds,
+                'text': parsed_blocks[i]['text']
             })
         
-        return result
+        # Строим иерархическое дерево
+        tree = _build_hierarchical_tree(flat_blocks)
+        return tree
     
     except Exception:
         # Если что-то пошло не так - возвращаем пустой список (robustness)
