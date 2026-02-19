@@ -7,7 +7,7 @@
 - This prevents selection from traversing outside the loaded model
 
 ### 2. Made selection overlay transform updates robust for animated meshes
-- Call `sourceMesh.updateWorldMatrix(true, false)` before copying transforms
+- Call `sourceMesh.updateWorldMatrix(false, false)` before copying transforms (updateParents=false since mixer already updates parent transforms)
 - Copy transforms to `overlay.matrix` (since `matrixAutoUpdate=false`)
 - Also set `overlay.matrixWorld` for consistency
 - Set `overlay.matrixWorldNeedsUpdate = false` after update
