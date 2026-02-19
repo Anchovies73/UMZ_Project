@@ -247,7 +247,7 @@ function findParentWithChildren(obj) {
   // Walk up the hierarchy to find the nearest ancestor that has children
   // Stop at modelRoot to avoid selecting objects outside the loaded model
   let current = obj.parent;
-  while (current && current !== modelRoot) {
+  while (current && current !== modelRoot && current.parent !== modelRoot) {
     // Check if this node has children (more than one, meaning it's a grouping node)
     if (current.children.length > 1) {
       return current;
@@ -255,12 +255,12 @@ function findParentWithChildren(obj) {
     // Move up the hierarchy
     current = current.parent;
   }
-  // If no suitable parent found, check if object has siblings
+  // If no suitable parent found, check if object has siblings (but not at modelRoot level)
   // This provides better shift+click behavior
-  if (obj.parent && obj.parent.children.length > 1) {
+  if (obj.parent && obj.parent !== modelRoot && obj.parent.children.length > 1) {
     return obj.parent;
   }
-  // If object is alone, return itself
+  // If object is alone or at modelRoot level, return itself
   return obj;
 }
 
