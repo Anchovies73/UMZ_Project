@@ -6,3 +6,6 @@ __pycache__/
 # Blender temp files
 *.blend1
 *.blend2
+
+# Vendor libraries
+vendor/

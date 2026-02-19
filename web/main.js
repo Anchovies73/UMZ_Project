@@ -1,5 +1,8 @@
 import * as THREE from '../vendor/three/build/three.module.js';
 import { GLTFLoader } from '../vendor/three/examples/jsm/loaders/GLTFLoader.js';
+import { EffectComposer } from '../vendor/three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from '../vendor/three/examples/jsm/postprocessing/RenderPass.js';
+import { OutlinePass } from '../vendor/three/examples/jsm/postprocessing/OutlinePass.js';
 
 // =====================
 // CONFIG
@@ -35,6 +38,14 @@ const fallbackCamera = new THREE.PerspectiveCamera(
 
 // Камера, которой реально рендерим
 let activeCamera = fallbackCamera;
+
+// Postprocessing composer and passes
+let composer = null;
+let renderPass = null;
+let outlinePass = null;
+
+// Model root for selection and picking
+let modelRoot = null;
 
 // Свет
 scene.add(new THREE.HemisphereLight(0xffffff, 0x223344, 1.9));
@@ -73,6 +84,12 @@ function updateCameraAspect(cam) {
   } else if (cam && cam.isOrthographicCamera) {
     cam.updateProjectionMatrix();
   }
+}
+
+// Update camera in postprocessing passes when activeCamera changes
+function updatePassesCamera(cam) {
+  if (renderPass) renderPass.camera = cam;
+  if (outlinePass) outlinePass.renderCamera = cam;
 }
 
 // ----- alpha_tracks runtime helpers -----
@@ -212,6 +229,47 @@ function applySelectiveVisibilityWithParents(modelRoot, animData) {
   });
 }
 
+// ====== Selection and Picking ======
+
+function getVisibleMeshes(root) {
+  const meshes = [];
+  if (!root) return meshes;
+  
+  root.traverse((o) => {
+    if ((o.isMesh || o.isSkinnedMesh) && o.visible) {
+      meshes.push(o);
+    }
+  });
+  return meshes;
+}
+
+function findParentWithChildren(obj) {
+  // Walk up the hierarchy to find the nearest ancestor that has multiple children
+  // Stop before reaching modelRoot to avoid selecting objects outside the loaded model
+  let current = obj.parent;
+  
+  // Traverse up the hierarchy, stopping at modelRoot
+  while (current && current !== modelRoot) {
+    if (current.children.length > 1) {
+      return current;
+    }
+    current = current.parent;
+  }
+  
+  // No suitable parent found - return the object itself
+  return obj;
+}
+
+function getAllMeshesInSubtree(root) {
+  const meshes = [];
+  root.traverse((o) => {
+    if (o.isMesh || o.isSkinnedMesh) {
+      meshes.push(o);
+    }
+  });
+  return meshes;
+}
+
 // =====================
 // RUN
 // =====================
@@ -227,7 +285,7 @@ new GLTFLoader().load(
     const modelWrapper = new THREE.Group();
     modelWrapper.rotation.x = MODEL_AXIS_FIX_X;
 
-    const modelRoot = gltf.scene;
+    modelRoot = gltf.scene;
     renameNodesFromGltfId(modelRoot);
 
     modelWrapper.add(modelRoot);
@@ -252,6 +310,27 @@ new GLTFLoader().load(
       updateCameraAspect(activeCamera);
       console.log('Using fallback camera for render');
     }
+
+    // Initialize postprocessing composer
+    composer = new EffectComposer(renderer);
+    renderPass = new RenderPass(scene, activeCamera);
+    composer.addPass(renderPass);
+
+    outlinePass = new OutlinePass(
+      new THREE.Vector2(window.innerWidth, window.innerHeight),
+      scene,
+      activeCamera
+    );
+    outlinePass.edgeStrength = 3.0;
+    outlinePass.edgeGlow = 0.5;
+    outlinePass.edgeThickness = 2.0;
+    outlinePass.pulsePeriod = 0;
+    outlinePass.visibleEdgeColor.set('#ffffff');
+    outlinePass.hiddenEdgeColor.set('#190a05');
+    composer.addPass(outlinePass);
+
+    // Update passes to use activeCamera
+    updatePassesCamera(activeCamera);
 
     // Load anim JSON once: tracks + alpha_tracks + visible_nodes
     const res = await fetch(ANIM_URL);
@@ -310,6 +389,63 @@ new GLTFLoader().load(
 window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
   updateCameraAspect(activeCamera);
+  
+  // Update composer and outline pass sizes
+  if (composer) {
+    composer.setSize(window.innerWidth, window.innerHeight);
+  }
+  if (outlinePass) {
+    outlinePass.setSize(window.innerWidth, window.innerHeight);
+  }
+});
+
+// Click handling for mesh selection
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+
+canvas.addEventListener('click', (event) => {
+  if (!modelRoot) return;
+
+  // Calculate mouse position in normalized device coordinates (-1 to +1)
+  const rect = canvas.getBoundingClientRect();
+  mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+  // Update the picking ray with the camera and mouse position
+  raycaster.setFromCamera(mouse, activeCamera);
+
+  // Get visible meshes for raycasting
+  const visibleMeshes = getVisibleMeshes(modelRoot);
+  
+  // Calculate objects intersecting the picking ray
+  const intersects = raycaster.intersectObjects(visibleMeshes, false);
+
+  if (intersects.length > 0) {
+    const clickedObject = intersects[0].object;
+    
+    if (event.shiftKey) {
+      // Shift+click: find parent with children and outline all meshes in subtree
+      const parent = findParentWithChildren(clickedObject);
+      const meshesInSubtree = getAllMeshesInSubtree(parent);
+      
+      if (outlinePass && meshesInSubtree.length > 0) {
+        outlinePass.selectedObjects = meshesInSubtree;
+        console.log('Shift+click: Selected parent subtree with', meshesInSubtree.length, 'meshes');
+      }
+    } else {
+      // Normal click: outline only the clicked mesh
+      if (outlinePass) {
+        outlinePass.selectedObjects = [clickedObject];
+        console.log('Click: Selected mesh', clickedObject.name || clickedObject.uuid);
+      }
+    }
+  } else {
+    // Clicked empty space: clear selection
+    if (outlinePass) {
+      outlinePass.selectedObjects = [];
+      console.log('Click: Cleared selection');
+    }
+  }
 });
 
 function animate() {
@@ -328,7 +464,12 @@ function animate() {
   }
 
   if (!readyToRender) return;
-  renderer.render(scene, activeCamera);
+  
+  if (composer) {
+    composer.render();
+  } else {
+    renderer.render(scene, activeCamera);
+  }
 }
 
 animate();
