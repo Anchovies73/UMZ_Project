@@ -47,18 +47,19 @@ let outlinePass = null;
 // Model root for selection and picking
 let modelRoot = null;
 
-// Selection fill material and state
-const selectionFillMaterial = new THREE.MeshBasicMaterial({
+// Overlay meshes for selection fill (x-ray effect)
+const overlayMeshes = []; // Array of {sourceMesh, overlay} objects
+
+// Shared overlay material for all selection overlays
+const sharedOverlayMaterial = new THREE.MeshBasicMaterial({
   color: 0xff0000,
   transparent: true,
   opacity: 0.3,
   depthTest: false,
   depthWrite: false,
+  blending: THREE.AdditiveBlending,
   side: THREE.DoubleSide
 });
-
-// Store original materials and renderOrder for selected meshes
-const originalMaterialState = new Map(); // Map<mesh, {material, renderOrder}>
 
 // Свет
 scene.add(new THREE.HemisphereLight(0xffffff, 0x223344, 1.9));
@@ -275,35 +276,21 @@ function getVisibleMeshes(root) {
   return meshes;
 }
 
-function findLogicalParent(obj) {
-  // Find smallest ancestor with userData.gltf_id whose subtree contains >1 mesh
-  // Fallback to obj.parent if no such ancestor found
+function findNearestLogicalNode(obj) {
+  // Find nearest ancestor (including self) with userData.gltf_id
+  // Start from the object itself, then traverse upward
+  let current = obj;
   
-  let bestCandidate = obj.parent;
-  let current = obj.parent;
-  
-  // Traverse up the hierarchy, stopping at modelRoot
   while (current && current !== modelRoot) {
     // Check if this node has userData.gltf_id
     if (current.userData && current.userData.gltf_id) {
-      // Count meshes in subtree
-      let meshCount = 0;
-      current.traverse((o) => {
-        if (o.isMesh || o.isSkinnedMesh) {
-          meshCount++;
-        }
-      });
-      
-      // If subtree has >1 mesh, this is a valid candidate
-      if (meshCount > 1) {
-        bestCandidate = current;
-        break; // Found the smallest (closest) valid ancestor
-      }
+      return current;
     }
     current = current.parent;
   }
   
-  return bestCandidate || obj.parent || obj;
+  // If no gltf_id found, return the object itself
+  return obj;
 }
 
 function getAllMeshesInSubtree(root) {
@@ -316,31 +303,57 @@ function getAllMeshesInSubtree(root) {
   return meshes;
 }
 
-// Apply selection fill to meshes
+// Create overlay mesh for x-ray selection fill
+function createOverlayMesh(sourceMesh) {
+  const overlayMesh = new THREE.Mesh(sourceMesh.geometry, sharedOverlayMaterial);
+  overlayMesh.renderOrder = 9999; // High render order to draw on top
+  overlayMesh.matrixAutoUpdate = false; // We'll manually update the matrix
+  
+  return overlayMesh;
+}
+
+// Apply selection fill to meshes using overlay approach
 function applySelectionFill(meshes) {
-  // First, clear any existing selection fill
+  // First, clear any existing overlays
   clearSelectionFill();
   
   for (const mesh of meshes) {
-    // Store original state
-    originalMaterialState.set(mesh, {
-      material: mesh.material,
-      renderOrder: mesh.renderOrder
-    });
+    // Create overlay mesh
+    const overlay = createOverlayMesh(mesh);
     
-    // Apply selection fill material
-    mesh.material = selectionFillMaterial;
-    mesh.renderOrder = 9999; // High render order for x-ray effect
+    // Add to scene
+    scene.add(overlay);
+    
+    // Store reference
+    overlayMeshes.push({ sourceMesh: mesh, overlay: overlay });
   }
 }
 
-// Clear selection fill and restore original materials
+// Clear selection fill overlays
 function clearSelectionFill() {
-  for (const [mesh, state] of originalMaterialState) {
-    mesh.material = state.material;
-    mesh.renderOrder = state.renderOrder;
+  for (const item of overlayMeshes) {
+    scene.remove(item.overlay);
+    // Don't dispose geometry (shared with source mesh)
+    // Don't dispose material (shared across all overlays)
   }
-  originalMaterialState.clear();
+  overlayMeshes.length = 0;
+}
+
+// Update overlay transforms to match source meshes
+function updateOverlayTransforms() {
+  for (const item of overlayMeshes) {
+    // Ensure source mesh world matrix is up to date (important for animated meshes)
+    item.sourceMesh.updateWorldMatrix(true, false);
+    
+    // Copy transforms to overlay.matrix (since matrixAutoUpdate=false)
+    item.overlay.matrix.copy(item.sourceMesh.matrixWorld);
+    
+    // Also update matrixWorld for consistency
+    item.overlay.matrixWorld.copy(item.sourceMesh.matrixWorld);
+    
+    // Mark that matrixWorld is now up to date
+    item.overlay.matrixWorldNeedsUpdate = false;
+  }
 }
 
 // =====================
@@ -394,9 +407,9 @@ new GLTFLoader().load(
       scene,
       activeCamera
     );
-    outlinePass.edgeStrength = 3.0;
+    outlinePass.edgeStrength = 5.0; // Increased for thicker outline
     outlinePass.edgeGlow = 0.5;
-    outlinePass.edgeThickness = 2.0;
+    outlinePass.edgeThickness = 6.0; // ~3x thicker (was 2.0)
     outlinePass.pulsePeriod = 2.0; // Enable pulsing with 2 second period
     outlinePass.visibleEdgeColor.set('#ff0000'); // Red outline
     outlinePass.hiddenEdgeColor.set('#990000'); // Darker red for hidden edges
@@ -497,14 +510,14 @@ canvas.addEventListener('click', (event) => {
     const clickedObject = intersects[0].object;
     
     if (event.shiftKey) {
-      // Shift+click: find logical parent and outline all meshes in subtree
-      const parent = findLogicalParent(clickedObject);
-      const meshesInSubtree = getAllMeshesInSubtree(parent);
+      // Shift+click: find nearest logical node with gltf_id and select all meshes in its subtree
+      const logicalNode = findNearestLogicalNode(clickedObject);
+      const meshesInSubtree = getAllMeshesInSubtree(logicalNode);
       
       if (outlinePass && meshesInSubtree.length > 0) {
         outlinePass.selectedObjects = meshesInSubtree;
         applySelectionFill(meshesInSubtree);
-        console.log('Shift+click: Selected parent subtree with', meshesInSubtree.length, 'meshes');
+        console.log('Shift+click: Selected subtree from logical node', logicalNode.name || logicalNode.uuid, 'with', meshesInSubtree.length, 'meshes');
       }
     } else {
       // Normal click: outline only the clicked mesh
@@ -538,6 +551,9 @@ function animate() {
       applyAlphaToSubtree(it.obj, a);
     }
   }
+
+  // Update overlay transforms to match source meshes
+  updateOverlayTransforms();
 
   if (!readyToRender) return;
   
