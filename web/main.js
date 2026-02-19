@@ -332,7 +332,7 @@ function applySelectionFill(meshes) {
 function clearSelectionFill() {
   for (const item of overlayMeshes) {
     scene.remove(item.overlay);
-    item.overlay.geometry = null; // Don't dispose geometry (shared with source)
+    // Don't dispose geometry (shared with source mesh)
     item.overlay.material.dispose();
   }
   overlayMeshes.length = 0;
@@ -341,9 +341,11 @@ function clearSelectionFill() {
 // Update overlay transforms to match source meshes
 function updateOverlayTransforms() {
   for (const item of overlayMeshes) {
-    // Copy world matrix from source mesh to overlay
-    item.sourceMesh.updateMatrixWorld(true);
+    // Copy world matrix from source to overlay
+    // Since overlay has matrixAutoUpdate=false and parent is scene,
+    // we set matrix to the source's world matrix directly
     item.overlay.matrix.copy(item.sourceMesh.matrixWorld);
+    item.overlay.matrixWorldNeedsUpdate = true;
   }
 }
 
