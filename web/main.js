@@ -246,7 +246,7 @@ function applySelectiveVisibilityWithParents(modelRoot, animData) {
 
 // Check if a mesh is render-invisible (set by setMeshRenderInvisible)
 function isMeshRenderInvisible(mesh) {
-  if (!mesh.isMesh) return false;
+  if (!mesh.isMesh && !mesh.isSkinnedMesh) return false;
   
   const mats = Array.isArray(mesh.material) ? mesh.material : (mesh.material ? [mesh.material] : []);
   for (const mat of mats) {
@@ -303,7 +303,7 @@ function findLogicalParent(obj) {
     current = current.parent;
   }
   
-  return bestCandidate || obj.parent;
+  return bestCandidate || obj.parent || obj;
 }
 
 function getAllMeshesInSubtree(root) {
