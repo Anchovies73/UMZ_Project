@@ -86,11 +86,7 @@ function updateCameraAspect(cam) {
 // Update camera in postprocessing passes when activeCamera changes
 function updatePassesCamera(cam) {
   if (renderPass) renderPass.camera = cam;
-  if (outlinePass) {
-    outlinePass.renderCamera = cam;
-    // OutlinePass also has a camera property, update it as well
-    if (outlinePass.camera) outlinePass.camera = cam;
-  }
+  if (outlinePass) outlinePass.renderCamera = cam;
 }
 
 // ----- alpha_tracks runtime helpers -----
@@ -249,20 +245,11 @@ function findParentWithChildren(obj) {
   // Walk up the hierarchy to find the nearest ancestor that has children
   let current = obj.parent;
   while (current) {
-    // Check if this node has children (more than just the current path)
+    // Check if this node has children (more than one, meaning it's a grouping node)
     if (current.children && current.children.length > 1) {
       return current;
     }
-    // If only one child, continue up
-    if (current.children && current.children.length === 1 && current.children[0] === obj) {
-      obj = current;
-      current = current.parent;
-      continue;
-    }
-    // Has multiple children, return this as parent
-    if (current.children && current.children.length > 0) {
-      return current;
-    }
+    // Move up the hierarchy
     current = current.parent;
   }
   // If no suitable parent found, return the object itself
