@@ -50,6 +50,17 @@ let modelRoot = null;
 // Overlay meshes for selection fill (x-ray effect)
 const overlayMeshes = []; // Array of {sourceMesh, overlay} objects
 
+// Shared overlay material for all selection overlays
+const sharedOverlayMaterial = new THREE.MeshBasicMaterial({
+  color: 0xff0000,
+  transparent: true,
+  opacity: 0.3,
+  depthTest: false,
+  depthWrite: false,
+  blending: THREE.AdditiveBlending,
+  side: THREE.DoubleSide
+});
+
 // Свет
 scene.add(new THREE.HemisphereLight(0xffffff, 0x223344, 1.9));
 const keyLight = new THREE.DirectionalLight(0xffffff, 1.2);
@@ -270,7 +281,7 @@ function findNearestLogicalNode(obj) {
   // Start from the object itself, then traverse upward
   let current = obj;
   
-  while (current && current !== modelRoot.parent) {
+  while (current && current !== modelRoot) {
     // Check if this node has userData.gltf_id
     if (current.userData && current.userData.gltf_id) {
       return current;
@@ -294,17 +305,7 @@ function getAllMeshesInSubtree(root) {
 
 // Create overlay mesh for x-ray selection fill
 function createOverlayMesh(sourceMesh) {
-  const overlayMaterial = new THREE.MeshBasicMaterial({
-    color: 0xff0000,
-    transparent: true,
-    opacity: 0.3,
-    depthTest: false,
-    depthWrite: false,
-    blending: THREE.AdditiveBlending,
-    side: THREE.DoubleSide
-  });
-  
-  const overlayMesh = new THREE.Mesh(sourceMesh.geometry, overlayMaterial);
+  const overlayMesh = new THREE.Mesh(sourceMesh.geometry, sharedOverlayMaterial);
   overlayMesh.renderOrder = 9999; // High render order to draw on top
   overlayMesh.matrixAutoUpdate = false; // We'll manually update the matrix
   
@@ -333,7 +334,7 @@ function clearSelectionFill() {
   for (const item of overlayMeshes) {
     scene.remove(item.overlay);
     // Don't dispose geometry (shared with source mesh)
-    item.overlay.material.dispose();
+    // Don't dispose material (shared across all overlays)
   }
   overlayMeshes.length = 0;
 }
@@ -341,9 +342,17 @@ function clearSelectionFill() {
 // Update overlay transforms to match source meshes
 function updateOverlayTransforms() {
   for (const item of overlayMeshes) {
-    // Copy world matrix from source to overlay
-    // Since overlay has matrixAutoUpdate=false, update matrixWorld directly
+    // Ensure source mesh world matrix is up to date (important for animated meshes)
+    item.sourceMesh.updateWorldMatrix(true, false);
+    
+    // Copy transforms to overlay.matrix (since matrixAutoUpdate=false)
+    item.overlay.matrix.copy(item.sourceMesh.matrixWorld);
+    
+    // Also update matrixWorld for consistency
     item.overlay.matrixWorld.copy(item.sourceMesh.matrixWorld);
+    
+    // Mark that matrixWorld is now up to date
+    item.overlay.matrixWorldNeedsUpdate = false;
   }
 }
 
