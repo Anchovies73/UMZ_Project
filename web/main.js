@@ -342,10 +342,8 @@ function clearSelectionFill() {
 function updateOverlayTransforms() {
   for (const item of overlayMeshes) {
     // Copy world matrix from source to overlay
-    // Since overlay has matrixAutoUpdate=false and parent is scene,
-    // we set matrix to the source's world matrix directly
-    item.overlay.matrix.copy(item.sourceMesh.matrixWorld);
-    item.overlay.matrixWorldNeedsUpdate = true;
+    // Since overlay has matrixAutoUpdate=false, update matrixWorld directly
+    item.overlay.matrixWorld.copy(item.sourceMesh.matrixWorld);
   }
 }
 
