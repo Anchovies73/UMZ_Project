@@ -44,6 +44,9 @@ let composer = null;
 let renderPass = null;
 let outlinePass = null;
 
+// Model root for selection and picking
+let modelRoot = null;
+
 // Свет
 scene.add(new THREE.HemisphereLight(0xffffff, 0x223344, 1.9));
 const keyLight = new THREE.DirectionalLight(0xffffff, 1.2);
@@ -227,7 +230,6 @@ function applySelectiveVisibilityWithParents(modelRoot, animData) {
 }
 
 // ====== Selection and Picking ======
-let modelRoot = null; // Will be set after model loads
 
 function getVisibleMeshes(root) {
   const meshes = [];
@@ -246,7 +248,7 @@ function findParentWithChildren(obj) {
   let current = obj.parent;
   while (current) {
     // Check if this node has children (more than one, meaning it's a grouping node)
-    if (current.children && current.children.length > 1) {
+    if (current.children.length > 1) {
       return current;
     }
     // Move up the hierarchy
