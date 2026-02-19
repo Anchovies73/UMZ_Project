@@ -1,5 +1,8 @@
 import * as THREE from '../vendor/three/build/three.module.js';
 import { GLTFLoader } from '../vendor/three/examples/jsm/loaders/GLTFLoader.js';
+import { EffectComposer } from '../vendor/three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from '../vendor/three/examples/jsm/postprocessing/RenderPass.js';
+import { OutlinePass } from '../vendor/three/examples/jsm/postprocessing/OutlinePass.js';
 
 // =====================
 // CONFIG
@@ -215,6 +218,8 @@ function applySelectiveVisibilityWithParents(modelRoot, animData) {
 // =====================
 // RUN
 // =====================
+let composer = null;
+let outlinePass = null;
 let mixer = null;
 let action = null;
 let alphaItems = []; // [{ obj, times: number[], values: number[] }]
@@ -260,6 +265,39 @@ new GLTFLoader().load(
 
     // ВАЖНО: фильтрация видимости с поддержкой родителей
     applySelectiveVisibilityWithParents(modelRoot, animData);
+
+    // ===== Post-processing: EffectComposer + OutlinePass =====
+    composer = new EffectComposer(renderer);
+    composer.renderTarget1.texture.colorSpace = THREE.SRGBColorSpace;
+    if (composer.renderTarget2) composer.renderTarget2.texture.colorSpace = THREE.SRGBColorSpace;
+    composer.addPass(new RenderPass(scene, activeCamera));
+
+    outlinePass = new OutlinePass(
+      new THREE.Vector2(window.innerWidth, window.innerHeight),
+      scene,
+      activeCamera
+    );
+    outlinePass.visibleEdgeColor.set(0xff0033);
+    outlinePass.hiddenEdgeColor.set(0xff0033);
+    outlinePass.edgeThickness = 6.0;
+    outlinePass.edgeStrength = 9.0;
+    outlinePass.edgeGlow = 0.5;
+    outlinePass.pulsePeriod = 2;
+
+    // Collect all renderable meshes under nodes marked with userData.red
+    const outlineMeshes = new Set();
+    modelRoot.traverse((o) => {
+      const red = o?.userData?.red;
+      if (typeof red !== 'string' || red.length === 0) return;
+      // traverse includes o itself — adds o if mesh, plus all mesh descendants
+      o.traverse((child) => {
+        if (child.isMesh || child.isSkinnedMesh) outlineMeshes.add(child);
+      });
+    });
+    outlinePass.selectedObjects = [...outlineMeshes];
+
+    composer.addPass(outlinePass);
+    // ===== End OutlinePass setup =====
 
     // Build clip from animData.tracks
     const tracks = [];
@@ -310,6 +348,8 @@ new GLTFLoader().load(
 window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
   updateCameraAspect(activeCamera);
+  if (composer) composer.setSize(window.innerWidth, window.innerHeight);
+  if (outlinePass) outlinePass.setSize(window.innerWidth, window.innerHeight);
 });
 
 function animate() {
@@ -328,7 +368,8 @@ function animate() {
   }
 
   if (!readyToRender) return;
-  renderer.render(scene, activeCamera);
+  if (composer) composer.render();
+  else renderer.render(scene, activeCamera);
 }
 
 animate();
