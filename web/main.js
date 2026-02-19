@@ -343,7 +343,8 @@ function clearSelectionFill() {
 function updateOverlayTransforms() {
   for (const item of overlayMeshes) {
     // Ensure source mesh world matrix is up to date (important for animated meshes)
-    item.sourceMesh.updateWorldMatrix(true, false);
+    // Use updateParents=false since mixer.update() already updates parent transforms
+    item.sourceMesh.updateWorldMatrix(false, false);
     
     // Copy transforms to overlay.matrix (since matrixAutoUpdate=false)
     item.overlay.matrix.copy(item.sourceMesh.matrixWorld);
