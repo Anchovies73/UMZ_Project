@@ -47,6 +47,19 @@ let outlinePass = null;
 // Model root for selection and picking
 let modelRoot = null;
 
+// Selection fill material and state
+const selectionFillMaterial = new THREE.MeshBasicMaterial({
+  color: 0xff0000,
+  transparent: true,
+  opacity: 0.3,
+  depthTest: false,
+  depthWrite: false,
+  side: THREE.DoubleSide
+});
+
+// Store original materials and renderOrder for selected meshes
+const originalMaterialState = new Map(); // Map<mesh, {material, renderOrder}>
+
 // Свет
 scene.add(new THREE.HemisphereLight(0xffffff, 0x223344, 1.9));
 const keyLight = new THREE.DirectionalLight(0xffffff, 1.2);
@@ -231,33 +244,66 @@ function applySelectiveVisibilityWithParents(modelRoot, animData) {
 
 // ====== Selection and Picking ======
 
+// Check if a mesh is render-invisible (set by setMeshRenderInvisible)
+function isMeshRenderInvisible(mesh) {
+  if (!mesh.isMesh && !mesh.isSkinnedMesh) return false;
+  
+  const mats = Array.isArray(mesh.material) ? mesh.material : (mesh.material ? [mesh.material] : []);
+  for (const mat of mats) {
+    if (!mat) continue;
+    
+    // Check if this material is marked as render-invisible
+    // (transparent=true, opacity=0, depthWrite=false, colorWrite=false)
+    if (mat.transparent && mat.opacity === 0 && !mat.depthWrite) {
+      if ('colorWrite' in mat && !mat.colorWrite) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 function getVisibleMeshes(root) {
   const meshes = [];
   if (!root) return meshes;
   
   root.traverse((o) => {
-    if ((o.isMesh || o.isSkinnedMesh) && o.visible) {
+    if ((o.isMesh || o.isSkinnedMesh) && o.visible && !isMeshRenderInvisible(o)) {
       meshes.push(o);
     }
   });
   return meshes;
 }
 
-function findParentWithChildren(obj) {
-  // Walk up the hierarchy to find the nearest ancestor that has multiple children
-  // Stop before reaching modelRoot to avoid selecting objects outside the loaded model
+function findLogicalParent(obj) {
+  // Find smallest ancestor with userData.gltf_id whose subtree contains >1 mesh
+  // Fallback to obj.parent if no such ancestor found
+  
+  let bestCandidate = obj.parent;
   let current = obj.parent;
   
   // Traverse up the hierarchy, stopping at modelRoot
   while (current && current !== modelRoot) {
-    if (current.children.length > 1) {
-      return current;
+    // Check if this node has userData.gltf_id
+    if (current.userData && current.userData.gltf_id) {
+      // Count meshes in subtree
+      let meshCount = 0;
+      current.traverse((o) => {
+        if (o.isMesh || o.isSkinnedMesh) {
+          meshCount++;
+        }
+      });
+      
+      // If subtree has >1 mesh, this is a valid candidate
+      if (meshCount > 1) {
+        bestCandidate = current;
+        break; // Found the smallest (closest) valid ancestor
+      }
     }
     current = current.parent;
   }
   
-  // No suitable parent found - return the object itself
-  return obj;
+  return bestCandidate || obj.parent || obj;
 }
 
 function getAllMeshesInSubtree(root) {
@@ -268,6 +314,33 @@ function getAllMeshesInSubtree(root) {
     }
   });
   return meshes;
+}
+
+// Apply selection fill to meshes
+function applySelectionFill(meshes) {
+  // First, clear any existing selection fill
+  clearSelectionFill();
+  
+  for (const mesh of meshes) {
+    // Store original state
+    originalMaterialState.set(mesh, {
+      material: mesh.material,
+      renderOrder: mesh.renderOrder
+    });
+    
+    // Apply selection fill material
+    mesh.material = selectionFillMaterial;
+    mesh.renderOrder = 9999; // High render order for x-ray effect
+  }
+}
+
+// Clear selection fill and restore original materials
+function clearSelectionFill() {
+  for (const [mesh, state] of originalMaterialState) {
+    mesh.material = state.material;
+    mesh.renderOrder = state.renderOrder;
+  }
+  originalMaterialState.clear();
 }
 
 // =====================
@@ -324,9 +397,9 @@ new GLTFLoader().load(
     outlinePass.edgeStrength = 3.0;
     outlinePass.edgeGlow = 0.5;
     outlinePass.edgeThickness = 2.0;
-    outlinePass.pulsePeriod = 0;
-    outlinePass.visibleEdgeColor.set('#ffffff');
-    outlinePass.hiddenEdgeColor.set('#190a05');
+    outlinePass.pulsePeriod = 2.0; // Enable pulsing with 2 second period
+    outlinePass.visibleEdgeColor.set('#ff0000'); // Red outline
+    outlinePass.hiddenEdgeColor.set('#990000'); // Darker red for hidden edges
     composer.addPass(outlinePass);
 
     // Update passes to use activeCamera
@@ -414,7 +487,7 @@ canvas.addEventListener('click', (event) => {
   // Update the picking ray with the camera and mouse position
   raycaster.setFromCamera(mouse, activeCamera);
 
-  // Get visible meshes for raycasting
+  // Get visible meshes for raycasting (excluding render-invisible meshes)
   const visibleMeshes = getVisibleMeshes(modelRoot);
   
   // Calculate objects intersecting the picking ray
@@ -424,18 +497,20 @@ canvas.addEventListener('click', (event) => {
     const clickedObject = intersects[0].object;
     
     if (event.shiftKey) {
-      // Shift+click: find parent with children and outline all meshes in subtree
-      const parent = findParentWithChildren(clickedObject);
+      // Shift+click: find logical parent and outline all meshes in subtree
+      const parent = findLogicalParent(clickedObject);
       const meshesInSubtree = getAllMeshesInSubtree(parent);
       
       if (outlinePass && meshesInSubtree.length > 0) {
         outlinePass.selectedObjects = meshesInSubtree;
+        applySelectionFill(meshesInSubtree);
         console.log('Shift+click: Selected parent subtree with', meshesInSubtree.length, 'meshes');
       }
     } else {
       // Normal click: outline only the clicked mesh
       if (outlinePass) {
         outlinePass.selectedObjects = [clickedObject];
+        applySelectionFill([clickedObject]);
         console.log('Click: Selected mesh', clickedObject.name || clickedObject.uuid);
       }
     }
@@ -443,6 +518,7 @@ canvas.addEventListener('click', (event) => {
     // Clicked empty space: clear selection
     if (outlinePass) {
       outlinePass.selectedObjects = [];
+      clearSelectionFill();
       console.log('Click: Cleared selection');
     }
   }
