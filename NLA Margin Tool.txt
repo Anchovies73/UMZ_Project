@@ -1,0 +1,555 @@
+bl_info = {
+    "name": "NLA Margin Tool",
+    "author": "Your Name",
+    "version": (1, 7),  # Новая функция: отступ внутри промежутка
+    "blender": (2, 79, 0),
+    "location": "View3D > Tools > NLA Tools",
+    "description": "Добавляет отступы между NLA стрипами на основе маркеров",
+    "category": "Animation",
+}
+
+import bpy
+import re
+
+# --- НАСТРОЙКИ (PROPERTIES) ---
+class NLA_MARGIN_Properties(bpy.types.PropertyGroup):
+    margin_frames = bpy.props.IntProperty(
+        name="Отступ (кадры)",
+        description="Количество кадров для отступа между стрипами",
+        default=10,
+        min=0,
+        max=1000
+    )
+    
+    marker_prefix = bpy.props.StringProperty(
+        name="Префикс маркера",
+        description="Префикс имен маркеров для обработки (например, F_)",
+        default="F_"
+    )
+
+# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+def is_original_marker(marker_name, prefix):
+    """Проверяет, является ли маркер оригинальным (не маркером отступа)"""
+    if not marker_name.startswith(prefix):
+        return False
+    pattern = "^{}\\d+$".format(re.escape(prefix))
+    return bool(re.match(pattern, marker_name))
+
+def is_gap_marker(marker_name, prefix):
+    """Проверяет, является ли маркер маркером отступа (с +)"""
+    if not marker_name.startswith(prefix):
+        return False
+    return "+" in marker_name
+
+def get_original_markers(context):
+    """Возвращает только оригинальные маркеры (не маркеры отступов)"""
+    prefix = context.scene.nla_margin_props.marker_prefix
+    all_markers = context.scene.timeline_markers
+    original_markers = [m for m in all_markers if is_original_marker(m.name, prefix)]
+    original_markers.sort(key=lambda m: m.frame)
+    return original_markers
+
+def get_gap_markers(context):
+    """Возвращает все маркеры отступов (с +)"""
+    prefix = context.scene.nla_margin_props.marker_prefix
+    all_markers = context.scene.timeline_markers
+    gap_markers = [m for m in all_markers if is_gap_marker(m.name, prefix)]
+    return gap_markers
+
+def get_marker_gaps(context):
+    """Возвращает список промежутков между оригинальными маркерами"""
+    markers = get_original_markers(context)
+    gaps = []
+    
+    for i in range(len(markers) - 1):
+        gaps.append({
+            'index': i,
+            'left_marker': markers[i],
+            'right_marker': markers[i + 1],
+            'start_frame': markers[i].frame,
+            'end_frame': markers[i + 1].frame,
+            'duration': markers[i + 1].frame - markers[i].frame
+        })
+    
+    return gaps
+
+def get_gap_marker_for_original(marker_name, gap_markers):
+    """Находит маркер отступа, связанный с данным оригинальным маркером"""
+    for gm in gap_markers:
+        if gm.name.startswith(marker_name + "+"):
+            return gm
+    return None
+
+def update_gap_marker_name(gap_marker, original_marker_name, total_offset):
+    """Обновляет имя маркера отступа: F_50+10 -> F_50+20"""
+    new_name = "{}+{}".format(original_marker_name, total_offset)
+    if gap_marker.name != new_name:
+        gap_marker.name = new_name
+
+def get_strips_in_range(start_frame, end_frame):
+    """Находит все стрипы в заданном диапазоне кадров"""
+    strips_in_range = []
+    
+    for obj in bpy.data.objects:
+        if obj.animation_data and obj.animation_data.nla_tracks:
+            for track in obj.animation_data.nla_tracks:
+                for strip in track.strips:
+                    if (strip.frame_start >= start_frame and strip.frame_start < end_frame) or \
+                       (strip.frame_end > start_frame and strip.frame_end <= end_frame) or \
+                       (strip.frame_start <= start_frame and strip.frame_end >= end_frame):
+                        strips_in_range.append({
+                            'obj': obj,
+                            'track': track,
+                            'strip': strip,
+                            'start': strip.frame_start,
+                            'end': strip.frame_end
+                        })
+    
+    return strips_in_range
+
+def shift_strips_and_markers_after(frame_threshold, shift_amount, context):
+    """Сдвигает стрипы и маркеры после указанного кадра"""
+    
+    # Сдвигаем стрипы
+    strips_to_shift = []
+    
+    for obj in bpy.data.objects:
+        if obj.animation_data and obj.animation_data.nla_tracks:
+            for track in obj.animation_data.nla_tracks:
+                for strip in track.strips:
+                    if strip.frame_start > frame_threshold:
+                        strips_to_shift.append({
+                            'strip': strip,
+                            'old_start': strip.frame_start,
+                            'action': strip.action,
+                            'action_frame_start': strip.action_frame_start,
+                            'action_frame_end': strip.action_frame_end,
+                            'scale': strip.scale,
+                            'repeat': strip.repeat,
+                            'mute': strip.mute,
+                            'blend_in': strip.blend_in,
+                            'blend_out': strip.blend_out,
+                            'use_auto_blend': strip.use_auto_blend
+                        })
+    
+    strips_to_shift.sort(key=lambda x: x['old_start'], reverse=True)
+    
+    for item in strips_to_shift:
+        strip = item['strip']
+        strip.frame_start += shift_amount
+        
+        if item['action']:
+            strip.action = item['action']
+        
+        strip.action_frame_start = item['action_frame_start']
+        strip.action_frame_end = item['action_frame_end']
+        strip.scale = item['scale']
+        strip.repeat = item['repeat']
+        strip.mute = item['mute']
+        strip.blend_in = item['blend_in']
+        strip.blend_out = item['blend_out']
+        strip.use_auto_blend = item['use_auto_blend']
+    
+    # Сдвигаем маркеры
+    markers_to_shift = []
+    for marker in context.scene.timeline_markers:
+        if marker.frame > frame_threshold:
+            markers_to_shift.append(marker)
+    
+    markers_to_shift.sort(key=lambda m: m.frame, reverse=True)
+    
+    for marker in markers_to_shift:
+        marker.frame += shift_amount
+
+def shift_strips_and_markers_from_to(start_threshold, end_threshold, shift_amount, context):
+    """Сдвигает стрипы и маркеты в диапазоне (включительно)"""
+    
+    # Сдвигаем стрипы в диапазоне
+    strips_to_shift = []
+    
+    for obj in bpy.data.objects:
+        if obj.animation_data and obj.animation_data.nla_tracks:
+            for track in obj.animation_data.nla_tracks:
+                for strip in track.strips:
+                    if strip.frame_start >= start_threshold and strip.frame_start <= end_threshold:
+                        strips_to_shift.append({
+                            'strip': strip,
+                            'old_start': strip.frame_start,
+                            'action': strip.action,
+                            'action_frame_start': strip.action_frame_start,
+                            'action_frame_end': strip.action_frame_end,
+                            'scale': strip.scale,
+                            'repeat': strip.repeat,
+                            'mute': strip.mute,
+                            'blend_in': strip.blend_in,
+                            'blend_out': strip.blend_out,
+                            'use_auto_blend': strip.use_auto_blend
+                        })
+    
+    strips_to_shift.sort(key=lambda x: x['old_start'], reverse=True)
+    
+    for item in strips_to_shift:
+        strip = item['strip']
+        strip.frame_start += shift_amount
+        
+        if item['action']:
+            strip.action = item['action']
+        
+        strip.action_frame_start = item['action_frame_start']
+        strip.action_frame_end = item['action_frame_end']
+        strip.scale = item['scale']
+        strip.repeat = item['repeat']
+        strip.mute = item['mute']
+        strip.blend_in = item['blend_in']
+        strip.blend_out = item['blend_out']
+        strip.use_auto_blend = item['use_auto_blend']
+    
+    # Сдвигаем маркеры в диапазоне
+    markers_to_shift = []
+    for marker in context.scene.timeline_markers:
+        if marker.frame >= start_threshold and marker.frame <= end_threshold:
+            markers_to_shift.append(marker)
+    
+    markers_to_shift.sort(key=lambda m: m.frame, reverse=True)
+    
+    for marker in markers_to_shift:
+        marker.frame += shift_amount
+
+# --- ОСНОВНЫЕ ОПЕРАТОРЫ ---
+class NLA_OT_add_margin_after_gap(bpy.types.Operator):
+    """Добавить отступ после промежутка (сдвигает всё после правого маркера)"""
+    bl_idname = "nla.add_margin_after_gap"
+    bl_label = "Отступ ПОСЛЕ промежутка"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    gap_index = bpy.props.IntProperty()
+    
+    def execute(self, context):
+        props = context.scene.nla_margin_props
+        gaps = get_marker_gaps(context)
+        
+        if self.gap_index >= len(gaps):
+            self.report({'ERROR'}, "Неверный индекс промежутка")
+            return {'CANCELLED'}
+        
+        gap = gaps[self.gap_index]
+        right_marker = gap['right_marker']
+        
+        gap_markers = get_gap_markers(context)
+        existing_gap_marker = get_gap_marker_for_original(right_marker.name, gap_markers)
+        
+        current_offset = 0
+        if existing_gap_marker:
+            match = re.search(r'\+(\d+)$', existing_gap_marker.name)
+            if match:
+                current_offset = int(match.group(1))
+        
+        new_total_offset = current_offset + props.margin_frames
+        split_point = right_marker.frame
+        
+        shift_strips_and_markers_after(split_point, props.margin_frames, context)
+        
+        new_marker_frame = right_marker.frame + new_total_offset
+        
+        if existing_gap_marker:
+            existing_gap_marker.frame = new_marker_frame
+            update_gap_marker_name(existing_gap_marker, right_marker.name, new_total_offset)
+        else:
+            new_marker_name = "{}+{}".format(right_marker.name, new_total_offset)
+            context.scene.timeline_markers.new(name=new_marker_name, frame=new_marker_frame)
+        
+        self.report({'INFO'}, "Отступ {} кадров ПОСЛЕ промежутка {}".format(
+            props.margin_frames, gap['index']+1))
+        return {'FINISHED'}
+
+class NLA_OT_add_margin_before_gap(bpy.types.Operator):
+    """Добавить отступ перед промежутком (сдвигает весь промежуток)"""
+    bl_idname = "nla.add_margin_before_gap"
+    bl_label = "Отступ ПЕРЕД промежутком"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    gap_index = bpy.props.IntProperty()
+    
+    def execute(self, context):
+        props = context.scene.nla_margin_props
+        gaps = get_marker_gaps(context)
+        
+        if self.gap_index >= len(gaps):
+            self.report({'ERROR'}, "Неверный индекс")
+            return {'CANCELLED'}
+        
+        gap = gaps[self.gap_index]
+        left_marker = gap['left_marker']
+        
+        split_point = left_marker.frame - 1
+        shift_strips_and_markers_after(split_point, props.margin_frames, context)
+        
+        self.report({'INFO'}, "Отступ {} кадров ПЕРЕД промежутком {}".format(
+            props.margin_frames, gap['index']+1))
+        return {'FINISHED'}
+
+class NLA_OT_add_margin_inside_gap(bpy.types.Operator):
+    """Добавить отступ ВНУТРИ промежутка (правый маркер остается, создается отступ)"""
+    bl_idname = "nla.add_margin_inside_gap"
+    bl_label = "Отступ ВНУТРИ промежутка"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    gap_index = bpy.props.IntProperty()
+    
+    def execute(self, context):
+        props = context.scene.nla_margin_props
+        gaps = get_marker_gaps(context)
+        
+        if self.gap_index >= len(gaps):
+            self.report({'ERROR'}, "Неверный индекс промежутка")
+            return {'CANCELLED'}
+        
+        gap = gaps[self.gap_index]
+        left_marker = gap['left_marker']
+        right_marker = gap['right_marker']
+        
+        # Сохраняем позицию правого маркера (она станет позицией отступа)
+        original_right_frame = right_marker.frame
+        
+        # Получаем все маркеры отступов
+        gap_markers = get_gap_markers(context)
+        
+        # Находим существующий маркер отступа для правого маркера
+        existing_gap_marker = get_gap_marker_for_original(right_marker.name, gap_markers)
+        
+        # Вычисляем текущий отступ для правого маркера
+        current_offset = 0
+        if existing_gap_marker:
+            match = re.search(r'\+(\d+)$', existing_gap_marker.name)
+            if match:
+                current_offset = int(match.group(1))
+        
+        # Новый суммарный отступ
+        new_total_offset = current_offset + props.margin_frames
+        
+        # Сдвигаем ВСЁ, начиная с позиции правого маркера (включительно)
+        # Это сдвинет сам правый маркер и всё после него
+        shift_strips_and_markers_after(original_right_frame - 1, props.margin_frames, context)
+        
+        # Теперь создаем/обновляем маркер отступа на ИСХОДНОЙ позиции правого маркера
+        if existing_gap_marker:
+            # Обновляем существующий маркер отступа
+            existing_gap_marker.frame = original_right_frame
+            update_gap_marker_name(existing_gap_marker, right_marker.name, new_total_offset)
+        else:
+            # Создаем новый маркер отступа
+            new_marker_name = "{}+{}".format(right_marker.name, new_total_offset)
+            context.scene.timeline_markers.new(name=new_marker_name, frame=original_right_frame)
+        
+        # Примечание: правый маркер уже сдвинут функцией shift_strips_and_markers_after
+        # и теперь находится на original_right_frame + props.margin_frames
+        
+        self.report({'INFO'}, 
+                    "Отступ {} кадров ВНУТРИ промежутка {}. Создан маркер {} на кадре {}".format(
+                        props.margin_frames, gap['index']+1, 
+                        "{}+{}".format(right_marker.name, new_total_offset),
+                        original_right_frame))
+        
+        return {'FINISHED'}
+
+class NLA_OT_add_margin_all_gaps(bpy.types.Operator):
+    """Добавить отступы между всеми промежутками (режим AFTER)"""
+    bl_idname = "nla.add_margin_all_gaps"
+    bl_label = "Отступы между ВСЕМИ (после)"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    def execute(self, context):
+        props = context.scene.nla_margin_props
+        gaps = get_marker_gaps(context)
+        
+        if len(gaps) < 2:
+            self.report({'ERROR'}, "Нужно минимум 2 промежутка (3 маркера)")
+            return {'CANCELLED'}
+        
+        # Работаем с конца к началу
+        shifted_gaps = 0
+        gap_markers = get_gap_markers(context)
+        
+        for i in range(len(gaps) - 1, 0, -1):
+            prev_gap = gaps[i-1]
+            prev_right_marker = prev_gap['right_marker']
+            
+            existing = get_gap_marker_for_original(prev_right_marker.name, gap_markers)
+            
+            current_offset = 0
+            if existing:
+                match = re.search(r'\+(\d+)$', existing.name)
+                if match:
+                    current_offset = int(match.group(1))
+            
+            new_offset = current_offset + props.margin_frames
+            split_point = prev_right_marker.frame
+            
+            shift_strips_and_markers_after(split_point, props.margin_frames, context)
+            
+            new_frame = prev_right_marker.frame + new_offset
+            
+            if existing:
+                existing.frame = new_frame
+                update_gap_marker_name(existing, prev_right_marker.name, new_offset)
+            else:
+                new_name = "{}+{}".format(prev_right_marker.name, new_offset)
+                context.scene.timeline_markers.new(name=new_name, frame=new_frame)
+            
+            shifted_gaps += 1
+        
+        self.report({'INFO'}, "Добавлены отступы между {} промежутками".format(shifted_gaps))
+        return {'FINISHED'}
+
+class NLA_OT_remove_gap_markers(bpy.types.Operator):
+    """Удалить все маркеры отступов (с +)"""
+    bl_idname = "nla.remove_gap_markers"
+    bl_label = "Удалить маркеры отступов"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    def execute(self, context):
+        gap_markers = get_gap_markers(context)
+        count = len(gap_markers)
+        
+        for marker in gap_markers:
+            context.scene.timeline_markers.remove(marker)
+        
+        self.report({'INFO'}, "Удалено {} маркеров отступов".format(count))
+        return {'FINISHED'}
+
+# --- ПАНЕЛЬ (Tools - T) ---
+class NLA_PT_main_panel(bpy.types.Panel):
+    bl_label = "NLA Margin Tool"
+    bl_idname = "NLA_PT_main_panel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'TOOLS'
+    bl_category = "NLA Tools"
+    
+    def draw(self, context):
+        layout = self.layout
+        props = context.scene.nla_margin_props
+        
+        # Настройки
+        box = layout.box()
+        box.label(text="Настройки", icon='SETTINGS')
+        box.prop(props, "margin_frames")
+        box.prop(props, "marker_prefix")
+        
+        layout.separator()
+        
+        # Информация о маркерах
+        original_markers = get_original_markers(context)
+        gap_markers = get_gap_markers(context)
+        gaps = get_marker_gaps(context)
+        
+        box = layout.box()
+        box.label(text="Информация", icon='INFO')
+        col = box.column(align=True)
+        col.label(text="Оригинальных маркеров: {}".format(len(original_markers)), icon='MARKER')
+        col.label(text="Промежутков: {}".format(len(gaps)), icon='KEYTYPE_KEYFRAME_VEC')
+        col.label(text="Маркеров отступов: {}".format(len(gap_markers)), icon='DECORATE')
+        
+        layout.separator()
+        
+        if not gaps:
+            layout.label(text="Нет промежутков (нужно минимум 2 маркера)", icon='ERROR')
+            return
+        
+        # Пояснение режимов
+        info_box = layout.box()
+        info_box.label(text="Режимы добавления:", icon='MODIFIER')
+        info_box.label(text="• ПОСЛЕ - сдвигает всё после правого маркера")
+        info_box.label(text="• ВНУТРИ - правый маркер превращается в отступ + сдвиг")
+        info_box.label(text="• ПЕРЕД - сдвигает весь промежуток")
+        
+        layout.separator()
+        
+        # Отображение всех промежутков
+        for i, gap in enumerate(gaps):
+            box = layout.box()
+            
+            # Заголовок промежутка
+            row = box.row()
+            row.label(text="Промежуток {}: [{}-{}]".format(
+                i+1, gap['start_frame'], gap['end_frame']), 
+                     icon='KEYTYPE_KEYFRAME_VEC')
+            row.label(text="длина: {} кадров".format(gap['duration']))
+            
+            # Статистика по стрипам
+            strips_in_gap = get_strips_in_range(gap['start_frame'], gap['end_frame'])
+            if strips_in_gap:
+                row.label(text="({} стрипов)".format(len(strips_in_gap)))
+            
+            # Информация о маркере отступа после этого промежутка
+            gap_marker = get_gap_marker_for_original(gap['right_marker'].name, gap_markers)
+            if gap_marker:
+                match = re.search(r'\+(\d+)$', gap_marker.name)
+                if match:
+                    offset = int(match.group(1))
+                    box.label(text="→ есть отступ: +{} ({} @ {})".format(
+                        offset, gap_marker.name, gap_marker.frame), 
+                             icon='FORWARD')
+            
+            # ТРИ кнопки для промежутка
+            col = box.column(align=True)
+            
+            # Кнопка "После"
+            op_after = col.operator("nla.add_margin_after_gap", text="Добавить отступ ПОСЛЕ")
+            op_after.gap_index = i
+            
+            # Кнопка "Внутри" (НОВАЯ)
+            op_inside = col.operator("nla.add_margin_inside_gap", text="Добавить отступ ВНУТРИ (на месте правого)")
+            op_inside.gap_index = i
+            
+            # Кнопка "Перед"
+            op_before = col.operator("nla.add_margin_before_gap", text="Добавить отступ ПЕРЕД")
+            op_before.gap_index = i
+            
+            # Информация о стрипах
+            if strips_in_gap:
+                sub_box = box.box()
+                sub_box.label(text="Стрипы:", icon='NLA')
+                for s in strips_in_gap[:2]:
+                    duration = int(s['end'] - s['start'])
+                    sub_box.label(text="  • {} [{}-{}] ({} кадров)".format(
+                        s['strip'].name, int(s['start']), int(s['end']), duration))
+                if len(strips_in_gap) > 2:
+                    sub_box.label(text="  ... и еще {}".format(len(strips_in_gap) - 2))
+        
+        # Глобальные кнопки
+        if len(gaps) > 1:
+            layout.separator()
+            layout.operator("nla.add_margin_all_gaps", icon='FORWARD')
+        
+        if gap_markers:
+            layout.separator()
+            layout.operator("nla.remove_gap_markers", icon='X', text="Удалить все маркеры отступов")
+
+# --- РЕГИСТРАЦИЯ ---
+def register():
+    bpy.utils.register_class(NLA_MARGIN_Properties)
+    bpy.utils.register_class(NLA_OT_add_margin_after_gap)
+    bpy.utils.register_class(NLA_OT_add_margin_before_gap)
+    bpy.utils.register_class(NLA_OT_add_margin_inside_gap)
+    bpy.utils.register_class(NLA_OT_add_margin_all_gaps)
+    bpy.utils.register_class(NLA_OT_remove_gap_markers)
+    bpy.utils.register_class(NLA_PT_main_panel)
+    
+    bpy.types.Scene.nla_margin_props = bpy.props.PointerProperty(type=NLA_MARGIN_Properties)
+    print("NLA Margin Tool v1.7 для 2.79 активирован - добавлен режим ВНУТРИ")
+
+def unregister():
+    del bpy.types.Scene.nla_margin_props
+    
+    bpy.utils.unregister_class(NLA_PT_main_panel)
+    bpy.utils.unregister_class(NLA_OT_remove_gap_markers)
+    bpy.utils.unregister_class(NLA_OT_add_margin_all_gaps)
+    bpy.utils.unregister_class(NLA_OT_add_margin_inside_gap)
+    bpy.utils.unregister_class(NLA_OT_add_margin_before_gap)
+    bpy.utils.unregister_class(NLA_OT_add_margin_after_gap)
+    bpy.utils.unregister_class(NLA_MARGIN_Properties)
+    
+    print("NLA Margin Tool деактивирован")
+
+if __name__ == "__main__":
+    register()
