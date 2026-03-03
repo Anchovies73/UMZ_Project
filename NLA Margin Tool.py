@@ -271,13 +271,11 @@ def set_custom_offset_name(offset_marker, anchor_index, direction, offset):
 # ---------------------------------------------------------------------------
 def _move_strip(strip, delta):
     """
-    Перемещает NLA стрип на delta кадров, сохраняя его длину.
-    delta может быть положительным (вправо) или отрицательным (влево).
+    Перемещает NLA стрип на delta кадров, сохраняя его размер и scale.
+    В Blender 2.79 frame_end вычисляется автоматически — трогаем только frame_start.
     """
     if delta != 0:
-        length = strip.frame_end - strip.frame_start
         strip.frame_start += delta
-        strip.frame_end = strip.frame_start + length
 
 
 def iter_scene_nla_strips(context):
@@ -295,64 +293,31 @@ def iter_scene_nla_strips(context):
 
 def shift_nla_strips(context, threshold, delta):
     """
-    Оптимизированная версия для больших сцен
+    Сдвигает NLA стрипы на delta кадров.
+    Двигаются только стрипы, у которых frame_start >= threshold.
+    Размер, scale и отступы между стрипами сохраняются.
+    В Blender 2.79 frame_end является вычисляемым — трогаем только frame_start.
     """
     if delta == 0:
         return
-    
+
     all_strips = list(iter_scene_nla_strips(context))
     if not all_strips:
         return
-    
-    # Группируем стрипы по объектам для лучшей производительности
-    strips_by_object = {}
-    for s in all_strips:
-        obj = s.id_data  # объект, которому принадлежит стрип
-        if obj not in strips_by_object:
-            strips_by_object[obj] = []
-        strips_by_object[obj].append(s)
-    
-    moved_count = 0
-    
-    # Обрабатываем каждый объект отдельно
-    for obj, strips in strips_by_object.items():
-        # Сохраняем данные
-        data = []
-        for s in strips:
-            should_move = s.frame_start >= threshold
-            if should_move:
-                moved_count += 1
-            data.append({
-                'strip': s,
-                'start': s.frame_start,
-                'end': s.frame_end,
-                'length': s.frame_end - s.frame_start,
-                'should_move': should_move
-            })
-        
-        # Сортируем по позиции
-        data.sort(key=lambda x: x['start'])
-        
-        # Вычисляем новые позиции
-        new_positions = []
-        for d in data:
-            if d['should_move']:
-                new_positions.append(d['start'] + delta)
-            else:
-                new_positions.append(d['start'])
-        
-        # Исправляем наложения
-        for i in range(1, len(new_positions)):
-            if new_positions[i] < new_positions[i-1] + data[i-1]['length']:
-                new_positions[i] = new_positions[i-1] + data[i-1]['length']
-        
-        # Применяем изменения (справа налево)
-        for i in range(len(new_positions)-1, -1, -1):
-            if data[i]['should_move'] or new_positions[i] != data[i]['start']:
-                s = data[i]['strip']
-                s.frame_start = new_positions[i]
-                s.frame_end = new_positions[i] + data[i]['length']
-    
+
+    to_move = [s for s in all_strips if s.frame_start >= threshold]
+    if not to_move:
+        return
+
+    # Сортируем: при delta>0 справа налево, при delta<0 слева направо
+    # Это предотвращает коллизии при перемещении
+    reverse = delta > 0
+    to_move.sort(key=lambda s: s.frame_start, reverse=reverse)
+
+    for s in to_move:
+        s.frame_start += delta
+
+
 # ---------------------------------------------------------------------------
 # VSE helpers – с учётом обрезок и видимости
 # ---------------------------------------------------------------------------
@@ -409,8 +374,9 @@ def shift_vse_strips(context, threshold, delta):
         if real_start >= threshold:
             to_shift.append(s)
 
-    # Сортировка по убыванию frame_start (от самых правых к левым)
-    to_shift.sort(key=lambda s: s.frame_start, reverse=True)
+    # Сортировка: при delta>0 справа налево, при delta<0 слева направо
+    reverse = delta > 0
+    to_shift.sort(key=lambda s: s.frame_start, reverse=reverse)
 
     for s in to_shift:
         s.frame_start += delta
