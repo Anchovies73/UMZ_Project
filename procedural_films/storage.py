@@ -75,6 +75,50 @@ def get_external_folder():
     return None
 
 
+def clear_external_folder_pref():
+    """
+    Очистить настройку папки (не трогая файлы на диске).
+    """
+    addon = _get_addon_package_name()
+    try:
+        prefs = bpy.context.preferences.addons.get(addon).preferences
+    except Exception:
+        prefs = None
+    if prefs is None:
+        return False
+    try:
+        prefs.external_animations_folder = ""
+        return True
+    except Exception:
+        return False
+
+
+def list_external_animation_names():
+    """
+    Быстро получить имена json-файлов в папке (без чтения json).
+    Используется для UI-диагностики/синхронизации.
+    """
+    folder = get_external_folder()
+    if not folder or not os.path.isdir(folder):
+        return []
+
+    names = []
+    try:
+        for fname in os.listdir(folder):
+            if not fname.lower().endswith(".json"):
+                continue
+            base = os.path.splitext(fname)[0]
+            # three_<name>.json не считаем библиотекой
+            if base.startswith("three_"):
+                continue
+            names.append(base)
+    except Exception:
+        return []
+
+    names.sort()
+    return names
+
+
 def write_animation_to_file(name, entry):
     global FILMS_CACHE_DIRTY
     folder = get_external_folder()

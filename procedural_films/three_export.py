@@ -10,11 +10,15 @@ from .constants import (
     GLTF_ID_PROP,
 )
 from .text_utils import get_active_text_datablock
+from .blender_codec import META_KEYS_ORDER
 
 # =========================================================
 # ЭКСПОРТ В THREE.JS (entry -> three_<name>.json)
 # Здесь НЕТ логики хранения библиотеки (Text/внешние name.json).
 # Мы принимаем entry (словарь) и строим clip для three.js.
+#
+# NEW:
+# - out["meta_objects"] для парсинга на сайте (meta + gltf_id)
 # =========================================================
 
 # -------------------------
@@ -61,6 +65,80 @@ def _is_camera_object(obj):
         return bool(obj and isinstance(obj.name, str) and obj.name.startswith("Camera"))
     except Exception:
         return False
+
+
+# -------------------------
+# NEW: meta objects for site parsing
+# -------------------------
+
+def _get_obj_gltf_id(obj):
+    try:
+        v = obj.get(GLTF_ID_PROP)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _collect_meta_objects_for_three(entry):
+    """
+    Возвращает list[dict] в стабильном формате для сайта.
+
+    Берём поля из entry["meta_objects"] (снимок на момент сохранения анимации),
+    а gltf_id подтягиваем из текущих объектов Blender (если объект есть),
+    чтобы соответствовало экспорту glTF.
+    """
+    meta_objects = (entry or {}).get("meta_objects")
+    if not isinstance(meta_objects, dict) or not meta_objects:
+        return []
+
+    out = []
+    for obj_name, fields in meta_objects.items():
+        if not isinstance(fields, dict):
+            continue
+
+        obj = bpy.data.objects.get(obj_name)
+        gltf_id = _get_obj_gltf_id(obj) if obj else ""
+
+        # node_id = то, что будет в треках three.js (gltf_id если есть)
+        node_id = gltf_id if gltf_id else obj_name
+
+        # нормализуем поля: только META_KEYS_ORDER
+        norm_fields = {}
+        for k in META_KEYS_ORDER:
+            if k in fields:
+                try:
+                    norm_fields[k] = fields.get(k)
+                except Exception:
+                    pass
+
+        # доп. "нечитабельная" строка (если вдруг нужно простое хранение)
+        # формат: key=value;key=value
+        try:
+            parts = []
+            for k in META_KEYS_ORDER:
+                if k in norm_fields:
+                    parts.append(f"{k}={norm_fields.get(k)}")
+            fields_csv = ";".join(parts)
+        except Exception:
+            fields_csv = ""
+
+        out.append({
+            "node_id": node_id,
+            "gltf_id": gltf_id,
+            "name": obj_name,
+            "fields": norm_fields,
+            "fields_csv": fields_csv,
+        })
+
+    # стабильный порядок (удобнее для git diff и сайта)
+    try:
+        out.sort(key=lambda x: str(x.get("node_id", "")))
+    except Exception:
+        pass
+
+    return out
 
 
 # -------------------------
@@ -274,117 +352,75 @@ def _build_alpha_tracks_for_object(node_id, anim, frame_start, frame_end, fps):
 # -------------------------
 
 def _parse_text_blocks(text_content):
-    """
-    Разбивает текст на блоки по пустым строкам.
-    Возвращает список строк (блоков), каждый блок - текст с сохранением внутренних переносов.
-    """
     if not text_content:
         return []
-    
+
     blocks = []
     current_block = []
-    
+
     for line in text_content.split('\n'):
         stripped = line.strip()
         if not stripped:
-            # Пустая строка - завершаем текущий блок
             if current_block:
-                block_text = '\n'.join(current_block)
-                block_text = block_text.strip()
+                block_text = '\n'.join(current_block).strip()
                 if block_text:
                     blocks.append(block_text)
                 current_block = []
         else:
-            # Добавляем строку в текущий блок
             current_block.append(line)
-    
-    # Добавляем последний блок, если он есть
+
     if current_block:
-        block_text = '\n'.join(current_block)
-        block_text = block_text.strip()
+        block_text = '\n'.join(current_block).strip()
         if block_text:
             blocks.append(block_text)
-    
+
     return blocks
 
 
 def _parse_id_and_text(block):
-    """
-    Парсит блок текста, извлекая id токен и остальной текст.
-    id токен - это последовательность цифр, разделенных точками, заканчивающаяся точкой.
-    Примеры: '1.', '1.1.', '1.2.1.1.'
-    
-    Возвращает (id, text) или (None, None) если формат неверный.
-    """
     if not block:
         return None, None
-    
-    # Ищем первый пробел
+
     space_idx = block.find(' ')
-    
+
     if space_idx == -1:
-        # Нет пробела - весь блок должен быть id токеном
         token = block
         text = ''
     else:
         token = block[:space_idx]
         text = block[space_idx + 1:]
-    
-    # Проверяем формат id токена
+
     if not token.endswith('.'):
         return None, None
-    
-    # Проверяем, что до точки только цифры и точки
+
     parts = token[:-1].split('.')
     if not parts:
         return None, None
-    
+
     for part in parts:
         if not part:
             return None, None
         if not part.isdigit():
             return None, None
-    
+
     return token, text
 
 
 def _get_parent_id(node_id):
-    """
-    Возвращает parent id для данного id.
-    Примеры:
-      '1.2.1.' -> '1.2.'
-      '1.2.' -> '1.'
-      '1.' -> None
-    """
     if not node_id or not node_id.endswith('.'):
         return None
-    
+
     parts = node_id[:-1].split('.')
     if len(parts) <= 1:
         return None
-    
+
     return '.'.join(parts[:-1]) + '.'
 
 
 def _build_hierarchical_tree(flat_blocks):
-    """
-    Строит иерархическое дерево из плоского списка блоков.
-    
-    flat_blocks - список dict с ключами: id, start, end, text
-    
-    Возвращает список корневых узлов, где каждый узел имеет структуру:
-    {
-      "id": "1.",
-      "start": 0.0,
-      "end": 1.5,
-      "text": "some text",
-      "children": [...]
-    }
-    """
     if not flat_blocks:
         return []
-    
-    # Создаём словарь для быстрого доступа к узлам по id
+
     nodes = {}
     for block in flat_blocks:
         node_id = block['id']
@@ -395,94 +431,75 @@ def _build_hierarchical_tree(flat_blocks):
             'text': block['text'],
             'children': []
         }
-    
-    # Находим корневые узлы и строим дерево
+
     roots = []
     for node_id, node in nodes.items():
         parent_id = _get_parent_id(node_id)
         if parent_id is None:
-            # Это корневой узел
             roots.append(node)
         elif parent_id in nodes:
-            # Добавляем к родителю
             nodes[parent_id]['children'].append(node)
-        # Если родитель не найден, узел игнорируется (не добавляется в дерево)
-    
+
     return roots
 
 
 def _build_markers_text(scene, fps):
-    """
-    Строит иерархический список markers_text из timeline markers и активного текстового блока.
-    Возвращает список корневых узлов или пустой список, если нет достаточно данных.
-    """
     try:
-        # Получаем timeline markers
         markers = scene.timeline_markers
         if len(markers) < 2:
             return []
-        
-        # Сортируем маркеры по frame
+
         sorted_markers = sorted(markers, key=lambda m: m.frame)
-        
-        # Получаем текст из активного Text Editor
+
         text_datablock = get_active_text_datablock()
         if not text_datablock:
             return []
-        
+
         text_content = text_datablock.as_string()
         if not text_content:
             return []
-        
-        # Парсим текст на блоки
+
         raw_blocks = _parse_text_blocks(text_content)
         if not raw_blocks:
             return []
-        
-        # Парсим каждый блок, извлекая id и text
+
         parsed_blocks = []
         for block in raw_blocks:
             node_id, text = _parse_id_and_text(block)
             if node_id is not None:
                 parsed_blocks.append({'id': node_id, 'text': text})
-        
+
         if not parsed_blocks:
             return []
-        
-        # Формируем marker ranges и мапим на блоки
+
         flat_blocks = []
-        fps_real = fps  # Уже учитывает fps_base
-        
+        fps_real = fps
+
         for i in range(len(sorted_markers) - 1):
             if i >= len(parsed_blocks):
-                # Блоков меньше чем marker ranges - игнорируем остальные ranges
                 break
-            
+
             parsed_block = parsed_blocks[i]
             marker_start = sorted_markers[i]
             marker_end = sorted_markers[i + 1]
-            
-            # Вычисляем время в секундах (абсолютное, не относительно frame_start)
+
             start_seconds = float(marker_start.frame) / fps_real
             end_seconds = float(marker_end.frame) / fps_real
-            
-            # Округляем до 2 знаков
+
             start_seconds = round(start_seconds, 2)
             end_seconds = round(end_seconds, 2)
-            
+
             flat_blocks.append({
                 'id': parsed_block['id'],
                 'start': start_seconds,
                 'end': end_seconds,
                 'text': parsed_block['text']
             })
-        
-        # Строим иерархическое дерево
+
         tree = _build_hierarchical_tree(flat_blocks)
         return tree
-    
+
     except Exception:
-        # Если что-то пошло не так - возвращаем пустой список (robustness)
         return []
 
 
@@ -504,10 +521,6 @@ def _is_quaternion_constant(values, eps=1e-6):
 
 
 def _eval_local_matrix(obj, depsgraph):
-    """
-    Возвращает локальную матрицу относительно (evaluated) родителя.
-    Нужна для корректного совпадения с glTF и учёта constraints/drivers.
-    """
     obj_eval = obj.evaluated_get(depsgraph)
     mw = obj_eval.matrix_world.copy()
 
@@ -548,8 +561,7 @@ def build_three_clip_from_saved_entry(entry_name, entry):
 
     tracks_out = []
     alpha_tracks_out = []
-    
-    # --- режим видимости для three.js (кладём node_id, а не Blender name) ---
+
     visible_nodes_mode = "ALL"
     visible_nodes = None
 
@@ -564,7 +576,7 @@ def build_three_clip_from_saved_entry(entry_name, entry):
                 obj = scene_objects.get(n)
                 if obj:
                     tmp.append(_safe_node_id(obj))
-            visible_nodes = tmp    
+            visible_nodes = tmp
 
     scene_objects = {o.name: o for o in bpy.data.objects}
 
@@ -581,7 +593,6 @@ def build_three_clip_from_saved_entry(entry_name, entry):
         node_id = _safe_node_id(obj)
         is_cam = _is_camera_object(obj)
 
-        # --- собираем список всех fcurves (dict) чтобы быстро понять, что вообще анимируется ---
         fcurves_all = []
         for nla_track in (anim.get("tracks") or []):
             for strip in (nla_track.get("strips") or []):
@@ -602,9 +613,6 @@ def build_three_clip_from_saved_entry(entry_name, entry):
         has_rot = _has_dp("rotation_quaternion") or _has_dp("rotation_euler")
         has_alpha = _has_dp("color") or _has_dp('["alpha"]')
 
-        # -------------------------
-        # alpha_tracks (отдельно, линейно)
-        # -------------------------
         if export_alpha and has_alpha:
             at = _build_alpha_tracks_for_object(node_id, anim, frame_start, frame_end, fps)
             if at:
@@ -612,10 +620,6 @@ def build_three_clip_from_saved_entry(entry_name, entry):
 
         fade = _collect_nla_keyframes(anim, '["fade"]', 0, frame_start, frame_end)
 
-        # -------------------------
-        # Position: keys-only (но значения берём из depsgraph)
-        # Камеру можно печь чаще/регулярно
-        # -------------------------
         if has_loc:
             pos_frames = set()
             pos_frames.update(_collect_nla_keyframes_frames(anim, "location", 0, frame_start, frame_end))
@@ -661,9 +665,6 @@ def build_three_clip_from_saved_entry(entry_name, entry):
                     "values": values
                 })
 
-        # -------------------------
-        # Rotation: quaternion bake (шаг фиксированный), для камеры можно чаще
-        # -------------------------
         if has_rot:
             if CAMERA_BAKE_EVERY_FRAME and is_cam:
                 frames = list(range(frame_start, frame_end + 1, int(CAMERA_BAKE_STEP_FRAMES)))
@@ -694,7 +695,6 @@ def build_three_clip_from_saved_entry(entry_name, entry):
                 q = rot.to_quaternion() if hasattr(rot, "to_quaternion") else rot
                 q.normalize()
 
-                # фикс "переворота" кватерниона: чтобы не было скачков из-за смены знака
                 if prev_q is not None and prev_q.dot(q) < 0.0:
                     q = Quaternion((-q.w, -q.x, -q.y, -q.z))
                 prev_q = q.copy()
@@ -707,7 +707,6 @@ def build_three_clip_from_saved_entry(entry_name, entry):
             except Exception:
                 pass
 
-            # если кватернион константный — можно не писать трек
             if not _is_quaternion_constant(quat_values):
                 tracks_out.append({
                     "type": "quaternion",
@@ -716,9 +715,6 @@ def build_three_clip_from_saved_entry(entry_name, entry):
                     "values": quat_values
                 })
 
-        # -------------------------
-        # Fade -> userData.fade (обычный number track)
-        # -------------------------
         if fade:
             frames = _union_frames(fade)
             if frames:
@@ -758,10 +754,15 @@ def build_three_clip_from_saved_entry(entry_name, entry):
     if visible_nodes_mode == "SELECTED":
         out["visible_nodes"] = visible_nodes or []
 
-    # Добавляем markers_text если есть маркеры и текст
     markers_text = _build_markers_text(scene, fps)
     if markers_text:
         out["markers_text"] = markers_text
+
+    # NEW: meta objects for site parsing (fields + gltf_id/node_id)
+    try:
+        out["meta_objects"] = _collect_meta_objects_for_three(entry)
+    except Exception:
+        out["meta_objects"] = []
 
     return out
 
