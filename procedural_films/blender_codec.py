@@ -6,6 +6,82 @@ import bpy
 # Файлы/кеш/папки — НЕ здесь (это в storage.py).
 # =========================================================
 
+# -------------------------
+# Object meta ("m"): сериализация/восстановление
+# -------------------------
+
+# Фиксированный порядок мета-полей для массива "m" (НЕ менять без миграции)
+META_KEYS_ORDER = (
+    "position",           # 0 Позиция
+    "oboznachenie",       # 1 Обозначение
+    "naimenovanie",       # 2 Наименование
+    "count_in_animation", # 3 Кол-во в анимации
+    "count_in_zip",       # 4 Кол-во в ZIP
+    "zip",                # 5 ZIP
+    "fnn",                # 6 ФНН
+    "proizvoditel",       # 7 Производитель
+    "link",               # 8 Ссылка
+)
+
+
+def _as_str_or_empty(v):
+    if v is None:
+        return ""
+    try:
+        # IDProperty может быть числом/строкой/и т.п. — приводим к строке
+        return str(v)
+    except Exception:
+        return ""
+
+
+def serialize_object_meta(obj):
+    """
+    Возвращает массив m длиной 9 (строки) в фиксированном порядке META_KEYS_ORDER,
+    но только если хотя бы одно поле (кроме имени и gltf_id) НЕ пустое.
+    Если все пустые — возвращает None.
+    """
+    if obj is None:
+        return None
+
+    values = []
+    has_any = False
+
+    for k in META_KEYS_ORDER:
+        v = ""
+        try:
+            # CP хранится как IDProperty: obj["key"]
+            if k in obj.keys():
+                v = _as_str_or_empty(obj.get(k))
+            else:
+                v = ""
+        except Exception:
+            v = ""
+
+        if v.strip():
+            has_any = True
+        values.append(v)
+
+    return values if has_any else None
+
+
+def apply_object_meta(obj, meta_list):
+    """
+    Восстанавливает мета-поля из meta_list (массив "m") в CP объекта.
+    """
+    if obj is None:
+        return
+    if not meta_list or not isinstance(meta_list, (list, tuple)):
+        return
+
+    # Если список короче — заполним недостающее пустыми (на всякий случай)
+    ml = list(meta_list) + ([""] * (len(META_KEYS_ORDER) - len(meta_list)))
+
+    for idx, k in enumerate(META_KEYS_ORDER):
+        try:
+            obj[k] = _as_str_or_empty(ml[idx])
+        except Exception:
+            pass
+
 
 # -------------------------
 # Action: сериализация/десериализация
